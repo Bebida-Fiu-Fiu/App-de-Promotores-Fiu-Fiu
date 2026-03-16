@@ -1,9 +1,9 @@
+import { ArrowLeft } from 'lucide-react';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
-import { Header } from '@/components/home/header';
 import { NewVisitForm } from '@/components/visits/new-visit-form';
 import { getSession } from '@/lib/auth';
-import { pool } from '@/lib/db';
 
 export default async function NewVisitPage() {
   const session = await getSession();
@@ -12,25 +12,17 @@ export default async function NewVisitPage() {
     redirect('/login');
   }
 
-  let fullName: string | null = null;
-
-  try {
-    const client = await pool.connect();
-    try {
-      const result = await client.query('SELECT full_name FROM promotors WHERE email = $1', [
-        session.email,
-      ]);
-      fullName = result.rows[0]?.full_name ?? null;
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    console.error('New visit page user lookup error:', error);
-  }
-
   return (
-    <main className="min-h-screen bg-[var(--background)]">
-      <Header fullName={fullName} />
+    <main className="min-h-screen bg-[var(--background)] pb-28">
+      <div className="mx-auto w-full max-w-xs px-4 pt-10">
+        <Link
+          href="/"
+          className="flex w-fit items-center gap-2 text-sm font-medium text-white/70 transition hover:text-white"
+        >
+          <ArrowLeft size={18} />
+          Voltar para o início
+        </Link>
+      </div>
       <NewVisitForm />
     </main>
   );

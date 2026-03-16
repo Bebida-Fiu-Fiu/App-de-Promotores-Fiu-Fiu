@@ -61,7 +61,7 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--background)] px-4 py-10">
+    <main className="min-h-screen bg-[var(--background)] px-4 py-10 pb-28">
       <Header fullName={fullName} />
       <VisitList visits={visits} />
     </main>

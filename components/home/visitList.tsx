@@ -1,4 +1,3 @@
-
 import Link from 'next/link';
 
 type VisitListProps = {
@@ -22,30 +21,31 @@ export function VisitList({ visits }: VisitListProps) {
         </Link>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-        <div className="grid grid-cols-[1fr_140px_100px] border-b border-white/10 px-4 py-3 text-sm font-semibold">
-          <span>Estabelecimento</span>
-          <span>Data</span>
-          <span>Acao</span>
-        </div>
-
+      <div className="mt-6 grid gap-4 sm:grid-cols-2">
         {visits.length === 0 ? (
-          <div className="px-4 py-6 text-sm opacity-80">Nenhuma visita cadastrada ainda.</div>
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm opacity-80">
+            Nenhuma visita cadastrada ainda.
+          </div>
         ) : (
           visits.map((visit) => (
-            <div
+            <article
               key={visit.id}
-              className="grid grid-cols-[1fr_140px_100px] items-center px-4 py-3 text-sm odd:bg-white/5"
+              className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
             >
-              <span>{visit.establishment}</span>
-              <span>{visit.visitDate}</span>
-              <Link
-                href={`/visitas/${visit.id}`}
-                className="w-fit rounded-md border border-white/20 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/10"
-              >
-                Ver
-              </Link>
-            </div>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-bold text-white">{visit.establishment}</h3>
+                  <p className="mt-2 text-sm text-white/70">Data: {visit.visitDate}</p>
+                </div>
+
+                <Link
+                  href={`/visitas/${visit.id}`}
+                  className="rounded-md border border-white/20 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/10"
+                >
+                  Ver
+                </Link>
+              </div>
+            </article>
           ))
         )}
       </div>

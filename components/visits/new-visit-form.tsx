@@ -3,7 +3,7 @@
 import { CalendarDays } from 'lucide-react';
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { useFieldArray, useForm } from 'react-hook-form';
+import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 
 import { createVisit } from '@/lib/actions';
 
@@ -61,20 +61,20 @@ function ProductExpirationDateField({
   const expirationPickerRef = useRef<HTMLInputElement | null>(null);
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex h-8 items-center rounded-md border border-[#707070] bg-white/20">
       <input
         type="text"
         inputMode="numeric"
         placeholder="Val. dd/mm/aaaa"
         value={value}
-        className="h-8 w-full rounded-md border border-[#707070] bg-white px-2 text-center text-sm outline-none"
+        className="h-full w-full bg-transparent px-3 text-center text-sm outline-none"
         onChange={(event) => onChange(event.target.value)}
       />
 
       <button
         type="button"
         onClick={() => expirationPickerRef.current?.showPicker?.()}
-        className="rounded-md border border-[#707070] bg-white p-2 text-[#2a2a2a] transition hover:bg-[#e9e9e4]"
+        className="flex h-full items-center justify-center border-l border-[#707070] px-2 text-white transition hover:bg-white/10"
         aria-label="Selecionar data de validade"
       >
         <CalendarDays size={14} />
@@ -96,7 +96,14 @@ export function NewVisitForm() {
   const [modalMessage, setModalMessage] = useState<string | null>(null);
   const [modalMode, setModalMode] = useState<'success' | 'error' | null>(null);
 
-  const { register, control, handleSubmit, setValue, watch, reset, formState: { isSubmitting } } = useForm<VisitFormValues>({
+  const {
+    register,
+    control,
+    handleSubmit,
+    setValue,
+    reset,
+    formState: { isSubmitting },
+  } = useForm<VisitFormValues>({
     defaultValues: {
       establishment: '',
       date: '',
@@ -111,7 +118,14 @@ export function NewVisitForm() {
     },
   });
 
-  const visitDate = watch('date');
+  const visitDate = useWatch({
+    control,
+    name: 'date',
+  }) ?? '';
+  const watchedProducts = useWatch({
+    control,
+    name: 'products',
+  }) ?? [];
 
   const { fields, append } = useFieldArray({
     control,
@@ -145,10 +159,10 @@ export function NewVisitForm() {
   };
 
   return (
-    <section className="flex w-full justify-center px-4 pt-24 pb-10">
+    <section className="flex w-full justify-center px-4 py-10">
       {modalMessage && modalMode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center text-[#2a2a2a] shadow-xl">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center text-white shadow-xl">
             <h2 className="text-xl font-bold">
               {modalMode === 'success' ? 'Visita salva' : 'Erro ao salvar'}
             </h2>
@@ -185,7 +199,7 @@ export function NewVisitForm() {
 
       <form
         onSubmit={handleSubmit(onSubmit)}
-        className="w-full max-w-xs rounded-[1.25rem] border border-[#5b5b5b] bg-[#f4f4f1] px-3 py-6 text-[#2a2a2a] shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
+        className="w-full max-w-xs rounded-[1.25rem] border border-[#5b5b5b] bg-white/10 px-3 py-6 text-[#ffffff] shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
       >
         <div className="space-y-3">
           <div className="space-y-1">
@@ -193,7 +207,7 @@ export function NewVisitForm() {
             <input
               type="text"
               placeholder="Digite o estabelecimento"
-              className="h-8 w-full rounded-md border border-[#707070] bg-white px-3 text-center text-sm outline-none"
+              className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
               {...register('establishment')}
             />
           </div>
@@ -206,7 +220,7 @@ export function NewVisitForm() {
                 inputMode="numeric"
                 placeholder="dd/mm/aaaa"
                 value={visitDate}
-                className="h-8 w-full rounded-md border border-[#707070] bg-white px-3 text-center text-sm outline-none"
+                className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
                 onChange={(event) =>
                   setValue('date', event.target.value, {
                     shouldDirty: true,
@@ -218,7 +232,7 @@ export function NewVisitForm() {
               <button
                 type="button"
                 onClick={() => visitDatePickerRef.current?.showPicker?.()}
-                className="rounded-md border border-[#707070] bg-white p-2 text-[#2a2a2a] transition hover:bg-[#e9e9e4]"
+                className="rounded-md border border-[#707070] bg-white/20 p-2 text-white transition hover:bg-[#e9e9e4]"
                 aria-label="Selecionar data da visita"
               >
                 <CalendarDays size={16} />
@@ -241,13 +255,13 @@ export function NewVisitForm() {
 
         <div className="mt-7 space-y-3">
           {fields.map((field, productIndex) => (
-            <div key={field.id} className="space-y-3 rounded-lg border border-[#cfcfc8] bg-[#efefe9] p-3">
+            <div key={field.id} className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
               <div className="space-y-1">
                 <label className="block text-sm font-medium">Produto</label>
                 <input
                   list={`product-suggestions-${productIndex}`}
                   placeholder="Digite ou selecione um produto"
-                  className="h-8 w-full rounded-md border border-[#707070] bg-white px-3 text-center text-sm outline-none"
+                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
                   {...register(`products.${productIndex}.name`)}
                 />
               </div>
@@ -265,7 +279,7 @@ export function NewVisitForm() {
                     type="number"
                     min="0"
                     placeholder="Qtd"
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white px-2 text-center text-sm outline-none"
+                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-center text-sm outline-none"
                     {...register(`products.${productIndex}.quantity`, {
                       valueAsNumber: true,
                     })}
@@ -275,7 +289,7 @@ export function NewVisitForm() {
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Unidade de medida</label>
                   <select
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white px-2 text-sm outline-none"
+                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-sm outline-none"
                     {...register(`products.${productIndex}.packageType`)}
                   >
                     {packageOptions.map((option) => (
@@ -289,7 +303,7 @@ export function NewVisitForm() {
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Validade</label>
                   <ProductExpirationDateField
-                    value={watch(`products.${productIndex}.expirationDate`)}
+                    value={watchedProducts[productIndex]?.expirationDate ?? ''}
                     onChange={(value) =>
                       setValue(`products.${productIndex}.expirationDate`, value, {
                         shouldDirty: true,
@@ -314,7 +328,7 @@ export function NewVisitForm() {
                 expirationDate: '',
               })
             }
-            className="rounded-md border border-[#707070] bg-white px-3 py-1.5 text-sm text-[#2a2a2a] transition hover:bg-[#e9e9e4]"
+            className="rounded-md border border-[#707070] bg-white/20 px-3 py-1.5 text-sm text-white transition hover:bg-[#e9e9e4]"
           >
             + Adicionar produto
           </button>
@@ -324,7 +338,7 @@ export function NewVisitForm() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="min-w-28 rounded-md border border-[#707070] bg-white px-4 py-1.5 text-sm text-[#2a2a2a] transition hover:bg-[#e9e9e4]"
+            className="min-w-28 rounded-md border border-[#707070] bg-white/20 px-4 py-1.5 text-sm text-white transition hover:bg-[#e9e9e4]"
           >
             {isSubmitting ? 'Salvando...' : 'Enviar'}
           </button>

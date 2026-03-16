@@ -40,7 +40,6 @@ export default async function VisitDetailsPage({
     | {
         establishment: string;
         visitDate: string;
-        promotorName: string | null;
         products: VisitProduct[];
       }
     | null = null;
@@ -51,7 +50,7 @@ export default async function VisitDetailsPage({
       const [userResult, visitResult] = await Promise.all([
         client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
         client.query(
-          `SELECT v.establishment, v.visit_date, v.products, p.full_name
+          `SELECT v.establishment, v.visit_date, v.products
            FROM visits v
            INNER JOIN promotors p ON p.id = v.promotor_id
            WHERE v.id = $1 AND p.email = $2`,
@@ -66,7 +65,6 @@ export default async function VisitDetailsPage({
         visit = {
           establishment: row.establishment,
           visitDate: formatDatabaseDateToDisplay(row.visit_date),
-          promotorName: row.full_name ?? null,
           products: Array.isArray(row.products) ? row.products : [],
         };
       }
@@ -82,7 +80,7 @@ export default async function VisitDetailsPage({
   }
 
   return (
-    <main className="min-h-screen bg-[var(--background)] px-4 py-10">
+    <main className="min-h-screen bg-[var(--background)] px-4 py-10 pb-28">
       <Header fullName={fullName} />
 
       <section className="mx-auto w-full max-w-4xl px-6 pt-24">
@@ -90,9 +88,6 @@ export default async function VisitDetailsPage({
           <div>
             <h2 className="text-2xl font-bold">{visit.establishment}</h2>
             <p className="mt-2 text-sm opacity-80">Data da visita: {visit.visitDate}</p>
-            {visit.promotorName && (
-              <p className="mt-1 text-sm opacity-80">Promotor: {visit.promotorName}</p>
-            )}
           </div>
 
           <Link
@@ -103,28 +98,42 @@ export default async function VisitDetailsPage({
           </Link>
         </div>
 
-        <div className="mt-6 overflow-hidden rounded-2xl border border-white/10 bg-white/5">
-          <div className="grid grid-cols-[1.4fr_120px_140px_140px] border-b border-white/10 px-4 py-3 text-sm font-semibold">
-            <span>Produto</span>
-            <span>Quantidade</span>
-            <span>Unidade</span>
-            <span>Validade</span>
-          </div>
-
+        <div className="mt-6">
           {visit.products.length === 0 ? (
-            <div className="px-4 py-6 text-sm opacity-80">Nenhum produto registrado nesta visita.</div>
+            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm opacity-80">
+              Nenhum produto registrado nesta visita.
+            </div>
           ) : (
-            visit.products.map((product, index) => (
-              <div
-                key={`${product.name}-${index}`}
-                className="grid grid-cols-[1.4fr_120px_140px_140px] px-4 py-3 text-sm odd:bg-white/5"
-              >
-                <span>{product.name}</span>
-                <span>{product.quantity}</span>
-                <span>{product.unit}</span>
-                <span>{product.expirationDate}</span>
-              </div>
-            ))
+            <div className="grid gap-4 sm:grid-cols-2">
+              {visit.products.map((product, index) => (
+                <article
+                  key={`${product.name}-${index}`}
+                  className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
+                >
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
+                    Produto {index + 1}
+                  </p>
+                  <h3 className="mt-2 text-lg font-bold text-white">{product.name}</h3>
+
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                    <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+                      <p className="text-xs uppercase tracking-[0.18em] text-white/50">Quantidade</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{product.quantity}</p>
+                    </div>
+
+                    <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+                      <p className="text-xs uppercase tracking-[0.18em] text-white/50">Unidade</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{product.unit}</p>
+                    </div>
+
+                    <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
+                      <p className="text-xs uppercase tracking-[0.18em] text-white/50">Validade</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{product.expirationDate}</p>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
           )}
         </div>
       </section>
