@@ -31,6 +31,17 @@ const visitSchema = z.object({
   products: z.array(visitProductSchema).min(1),
 });
 
+const clientSearchSchema = z.object({
+  clientName: z.string().trim().optional().default(''),
+  fantasyName: z.string().trim().optional().default(''),
+  document: z.string().trim().optional().default(''),
+  city: z.string().trim().optional().default(''),
+  address: z.string().trim().optional().default(''),
+  addressNumber: z.string().trim().optional().default(''),
+  neighborhood: z.string().trim().optional().default(''),
+  state: z.string().trim().optional().default(''),
+});
+
 function parseDisplayDateToDatabase(value: string) {
   const [day, month, year] = value.split('/');
 
@@ -39,6 +50,10 @@ function parseDisplayDateToDatabase(value: string) {
   }
 
   return `${year}-${month}-${day}`;
+}
+
+function normalizeDigits(value: string) {
+  return value.replace(/\D/g, '');
 }
 
 export async function login(data: z.infer<typeof loginSchema>) {
@@ -110,6 +125,80 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
 
 export async function logout() {
   await clearSession();
+}
+
+export async function searchClients(filters: z.infer<typeof clientSearchSchema>) {
+  const validation = clientSearchSchema.safeParse(filters);
+
+  if (!validation.success) {
+    return { success: false, error: 'Filtros invalidos.', clients: [] };
+  }
+
+  const {
+    clientName,
+    fantasyName,
+    document,
+    city,
+    address,
+    addressNumber,
+    neighborhood,
+    state,
+  } = validation.data;
+
+  const conditions: string[] = [];
+  const values: string[] = [];
+
+  const addCondition = (sql: string, value: string) => {
+    const trimmedValue = value.trim();
+
+    if (!trimmedValue) {
+      return;
+    }
+
+    values.push(`%${trimmedValue}%`);
+    conditions.push(sql.replace('$VALUE', `$${values.length}`));
+  };
+
+  addCondition('client_name ILIKE $VALUE', clientName);
+  addCondition('fantasy_name ILIKE $VALUE', fantasyName);
+  addCondition('city ILIKE $VALUE', city);
+  addCondition('address ILIKE $VALUE', address);
+  addCondition('address_number ILIKE $VALUE', addressNumber);
+  addCondition('neighborhood ILIKE $VALUE', neighborhood);
+  addCondition('state ILIKE $VALUE', state);
+
+  const normalizedDocument = normalizeDigits(document);
+  if (normalizedDocument) {
+    values.push(`%${normalizedDocument}%`);
+    conditions.push(
+      `regexp_replace(document, '[^0-9]', '', 'g') ILIKE $${values.length}`
+    );
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      const result = await client.query(
+        `SELECT id, client_name, fantasy_name, document, city, address, address_number, neighborhood, state
+         FROM clients
+         ${whereClause}
+         ORDER BY fantasy_name ASC, client_name ASC
+         LIMIT 30`
+        ,
+        values
+      );
+
+      return { success: true, clients: result.rows };
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Search clients error:', error);
+    return { success: false, error: 'Nao foi possivel buscar os estabelecimentos.', clients: [] };
+  }
 }
 
 export async function createVisit(data: z.infer<typeof visitSchema>) {
