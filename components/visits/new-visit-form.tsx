@@ -1,7 +1,7 @@
 'use client';
 
-import { Building2, CalendarDays, Search } from 'lucide-react';
-import { startTransition, useRef, useState } from 'react';
+import { Building2, CalendarDays, ChevronDown, Search } from 'lucide-react';
+import { startTransition, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 
@@ -23,6 +23,13 @@ const productSuggestions = [
   'Licor Tortinha de Limão',
   'Licor Paçoca'
 ];
+
+const productsWithIndefiniteExpiration = new Set([
+  'Cajazinha',
+  'Abacaxi Cortelâ',
+  'Tangerina c/ Acerola',
+  'Pomar',
+]);
 
 const packageOptions = ['unidade', 'pack', 'caixa'] as const;
 
@@ -113,6 +120,95 @@ function ProductExpirationDateField({
   );
 }
 
+function ProductSelectField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [query, setQuery] = useState(value);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setQuery(value);
+  }, [value]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setIsOpen(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+    };
+  }, [isOpen]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredProducts = productSuggestions.filter((product) =>
+    product.toLowerCase().includes(normalizedQuery)
+  );
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        className="flex h-8 w-full items-center justify-between rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white transition hover:bg-[#416174]"
+      >
+        <span className={value ? 'text-white' : 'text-white/60'}>
+          {value || 'Selecione um produto'}
+        </span>
+        <ChevronDown size={14} className={`transition ${isOpen ? 'rotate-180' : ''}`} />
+      </button>
+
+      {isOpen && (
+        <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-20 rounded-md border border-[#707070] bg-[#0c2432] p-2 shadow-[0_18px_40px_rgba(0,0,0,0.35)]">
+          <input
+            type="text"
+            value={query}
+            placeholder="Pesquisar produto"
+            className="h-8 w-full rounded-md border border-[#707070] bg-white/10 px-3 text-sm text-white outline-none placeholder:text-white/45"
+            onChange={(event) => setQuery(event.target.value)}
+          />
+
+          <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">
+            {filteredProducts.length > 0 ? (
+              filteredProducts.map((product) => (
+                <button
+                  key={product}
+                  type="button"
+                  onClick={() => {
+                    onChange(product);
+                    setQuery(product);
+                    setIsOpen(false);
+                  }}
+                  className={`w-full rounded-md px-3 py-2 text-left text-sm text-white transition ${
+                    value === product ? 'bg-[#009c6c]/25' : 'bg-white/5 hover:bg-white/10'
+                  }`}
+                >
+                  {product}
+                </button>
+              ))
+            ) : (
+              <p className="px-3 py-2 text-sm text-white/65">Nenhum produto encontrado.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function buildEstablishmentLabel(client: ClientSearchResult) {
   return client.fantasy_name || client.client_name;
 }
@@ -129,11 +225,59 @@ function buildClientSubtitle(client: ClientSearchResult) {
   return addressParts.join(', ');
 }
 
+function isCompleteDate(value: string) {
+  return /^\d{2}\/\d{2}\/\d{4}$/.test(value.trim());
+}
+
+function hasIndefiniteExpiration(productName: string) {
+  return productsWithIndefiniteExpiration.has(productName.trim());
+}
+
+function getMissingInformationMessage(
+  data: VisitFormValues,
+  hasSelectedClient: boolean
+) {
+  if (!hasSelectedClient || !data.establishment.trim()) {
+    return 'Selecione um estabelecimento antes de enviar a visita.';
+  }
+
+  if (!isCompleteDate(data.date)) {
+    return 'Informe a data da visita no formato dd/mm/aaaa.';
+  }
+
+  const firstIncompleteProduct = data.products.findIndex((product) => {
+    return (
+      !product.name.trim() ||
+      !Number.isFinite(product.quantity) ||
+      product.quantity <= 0 ||
+      (!hasIndefiniteExpiration(product.name) && !isCompleteDate(product.expirationDate))
+    );
+  });
+
+  if (firstIncompleteProduct >= 0) {
+    const productNumber = firstIncompleteProduct + 1;
+    const product = data.products[firstIncompleteProduct];
+
+    if (!product.name.trim()) {
+      return `Preencha o nome do produto ${productNumber}.`;
+    }
+
+    if (!Number.isFinite(product.quantity) || product.quantity <= 0) {
+      return `Informe uma quantidade maior que zero para o produto ${productNumber}.`;
+    }
+
+    return `Informe a validade do produto ${productNumber} no formato dd/mm/aaaa.`;
+  }
+
+  return null;
+}
+
 export function NewVisitForm() {
   const router = useRouter();
   const visitDatePickerRef = useRef<HTMLInputElement | null>(null);
   const [modalMessage, setModalMessage] = useState<string | null>(null);
   const [modalMode, setModalMode] = useState<'success' | 'error' | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
     clientName: '',
     fantasyName: '',
@@ -186,6 +330,7 @@ export function NewVisitForm() {
   });
 
   const handleFilterChange = (field: keyof ClientSearchFilters, value: string) => {
+    setFormError(null);
     setSearchFilters((current) => ({
       ...current,
       [field]: value,
@@ -217,6 +362,7 @@ export function NewVisitForm() {
 
   const handleSelectClient = (client: ClientSearchResult) => {
     setSelectedClient(client);
+    setFormError(null);
     setValue('establishment', buildEstablishmentLabel(client), {
       shouldDirty: true,
       shouldTouch: true,
@@ -226,6 +372,17 @@ export function NewVisitForm() {
   };
 
   const onSubmit = async (data: VisitFormValues) => {
+    const missingInformationMessage = getMissingInformationMessage(
+      data,
+      Boolean(selectedClient)
+    );
+
+    if (missingInformationMessage) {
+      setFormError(missingInformationMessage);
+      return;
+    }
+
+    setFormError(null);
     const result = await createVisit(data);
 
     if (!result.success) {
@@ -258,11 +415,11 @@ export function NewVisitForm() {
     <section className="flex w-full justify-center px-4 py-10">
       {modalMessage && modalMode && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 text-center text-white shadow-xl">
+          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0c2432] p-6 text-center text-white shadow-[0_18px_50px_rgba(0,0,0,0.35)]">
             <h2 className="text-xl font-bold">
               {modalMode === 'success' ? 'Visita salva' : 'Erro ao salvar'}
             </h2>
-            <p className="mt-3 text-sm">{modalMessage}</p>
+            <p className="mt-3 text-sm text-white/85">{modalMessage}</p>
             <div className="mt-5 flex justify-center gap-3">
               {modalMode === 'success' && (
                 <button
@@ -284,7 +441,7 @@ export function NewVisitForm() {
                   setModalMessage(null);
                   setModalMode(null);
                 }}
-                className="rounded-md border border-[#707070] bg-white px-4 py-2 text-sm transition hover:bg-[#f3f3ef]"
+                className="rounded-md border border-white/20 bg-white/10 px-4 py-2 text-sm text-white transition hover:bg-white/20"
               >
                 Fechar
               </button>
@@ -419,6 +576,7 @@ export function NewVisitForm() {
                     type="button"
                     onClick={() => {
                       setSelectedClient(null);
+                      setFormError(null);
                       setValue('establishment', '', {
                         shouldDirty: true,
                         shouldTouch: true,
@@ -474,6 +632,7 @@ export function NewVisitForm() {
                 value={visitDate}
                 className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
                 onChange={(event) => {
+                  setFormError(null);
                   let v = event.target.value.replace(/\D/g, '');
                   if (v.length > 8) v = v.slice(0, 8);
                   if (v.length > 4) {
@@ -503,6 +662,7 @@ export function NewVisitForm() {
                 type="date"
                 className="sr-only"
                 onChange={(event) => {
+                  setFormError(null);
                   setValue('date', formatDateToDisplay(event.target.value), {
                     shouldDirty: true,
                     shouldTouch: true,
@@ -518,19 +678,19 @@ export function NewVisitForm() {
             <div key={field.id} className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
               <div className="space-y-1">
                 <label className="block text-sm font-medium">Produto</label>
-                <input
-                  list={`product-suggestions-${productIndex}`}
-                  placeholder="Digite ou selecione um produto"
-                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
-                  {...register(`products.${productIndex}.name`)}
+                <input type="hidden" {...register(`products.${productIndex}.name`)} />
+                <ProductSelectField
+                  value={watchedProducts[productIndex]?.name ?? ''}
+                  onChange={(value) => {
+                    setFormError(null);
+                    setValue(`products.${productIndex}.name`, value, {
+                      shouldDirty: true,
+                      shouldTouch: true,
+                      shouldValidate: true,
+                    });
+                  }}
                 />
               </div>
-
-              <datalist id={`product-suggestions-${productIndex}`}>
-                {productSuggestions.map((product) => (
-                  <option key={product} value={product} />
-                ))}
-              </datalist>
 
               <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1">
@@ -542,6 +702,7 @@ export function NewVisitForm() {
                     className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-center text-sm outline-none"
                     {...register(`products.${productIndex}.quantity`, {
                       valueAsNumber: true,
+                      onChange: () => setFormError(null),
                     })}
                   />
                 </div>
@@ -549,11 +710,17 @@ export function NewVisitForm() {
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Unidade de medida</label>
                   <select
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-sm outline-none"
-                    {...register(`products.${productIndex}.packageType`)}
+                    className="h-8 w-full rounded-md border border-[#707070] bg-[#355061] px-2 text-sm text-white outline-none"
+                    {...register(`products.${productIndex}.packageType`, {
+                      onChange: () => setFormError(null),
+                    })}
                   >
                     {packageOptions.map((option) => (
-                      <option key={option} value={option}>
+                      <option
+                        key={option}
+                        value={option}
+                        className="bg-[#0c2432] text-white"
+                      >
                         {option}
                       </option>
                     ))}
@@ -562,23 +729,30 @@ export function NewVisitForm() {
 
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Validade</label>
-                  <ProductExpirationDateField
-                    value={watchedProducts[productIndex]?.expirationDate ?? ''}
-                    onChange={(value) => {
-                      let v = value.replace(/\D/g, '');
-                      if (v.length > 8) v = v.slice(0, 8);
-                      if (v.length > 4) {
-                        v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
-                      } else if (v.length > 2) {
-                        v = `${v.slice(0, 2)}/${v.slice(2)}`;
-                      }
-                      setValue(`products.${productIndex}.expirationDate`, v, {
-                        shouldDirty: true,
-                        shouldTouch: true,
-                        shouldValidate: true,
-                      });
-                    }}
-                  />
+                  {hasIndefiniteExpiration(watchedProducts[productIndex]?.name ?? '') ? (
+                    <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
+                      Validade indeterminada
+                    </div>
+                  ) : (
+                    <ProductExpirationDateField
+                      value={watchedProducts[productIndex]?.expirationDate ?? ''}
+                      onChange={(value) => {
+                        setFormError(null);
+                        let v = value.replace(/\D/g, '');
+                        if (v.length > 8) v = v.slice(0, 8);
+                        if (v.length > 4) {
+                          v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
+                        } else if (v.length > 2) {
+                          v = `${v.slice(0, 2)}/${v.slice(2)}`;
+                        }
+                        setValue(`products.${productIndex}.expirationDate`, v, {
+                          shouldDirty: true,
+                          shouldTouch: true,
+                          shouldValidate: true,
+                        });
+                      }}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -588,19 +762,26 @@ export function NewVisitForm() {
         <div className="mt-5 flex justify-start">
           <button
             type="button"
-            onClick={() =>
+            onClick={() => {
+              setFormError(null);
               append({
                 name: '',
                 quantity: 0,
                 packageType: 'unidade',
                 expirationDate: '',
-              })
-            }
+              });
+            }}
             className="rounded-md border border-[#707070] bg-white/20 px-3 py-1.5 text-sm text-white transition hover:bg-[#e9e9e4]"
           >
             + Adicionar produto
           </button>
         </div>
+
+        {formError && (
+          <p className="mt-4 rounded-md border border-[#ffb3b3]/30 bg-[#5c1f1f]/45 px-3 py-2 text-sm text-[#ffe2e2]">
+            {formError}
+          </p>
+        )}
 
         <div className="mt-7 flex justify-end">
           <button

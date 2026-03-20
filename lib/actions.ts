@@ -19,11 +19,34 @@ const signupSchema = loginSchema.extend({
   path: ['confirmPassword'],
 });
 
+const productsWithIndefiniteExpiration = new Set([
+  'Cajazinha',
+  'Abacaxi Cortelâ',
+  'Tangerina c/ Acerola',
+  'Pomar',
+]);
+
+function productHasIndefiniteExpiration(name: string) {
+  return productsWithIndefiniteExpiration.has(name.trim());
+}
+
 const visitProductSchema = z.object({
   name: z.string().min(1),
-  quantity: z.number().min(0),
+  quantity: z.number().gt(0),
   packageType: z.enum(['unidade', 'pack', 'caixa']),
-  expirationDate: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
+  expirationDate: z.string(),
+}).superRefine((product, ctx) => {
+  if (productHasIndefiniteExpiration(product.name)) {
+    return;
+  }
+
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(product.expirationDate)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Data de validade invalida.',
+      path: ['expirationDate'],
+    });
+  }
 });
 
 const visitSchema = z.object({
@@ -249,7 +272,9 @@ export async function createVisit(data: z.infer<typeof visitSchema>) {
   }
 
   const products = validation.data.products.map((product) => {
-    const expirationDate = parseDisplayDateToDatabase(product.expirationDate);
+    const expirationDate = productHasIndefiniteExpiration(product.name)
+      ? 'indeterminado'
+      : parseDisplayDateToDatabase(product.expirationDate);
 
     return {
       name: product.name,
