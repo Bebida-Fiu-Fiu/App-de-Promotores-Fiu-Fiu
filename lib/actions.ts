@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { pool } from '@/lib/db';
 import { clearSession, createSession, getSession } from '@/lib/auth';
@@ -56,6 +57,10 @@ function normalizeDigits(value: string) {
   return value.replace(/\D/g, '');
 }
 
+function looksLikePasswordHash(password: string) {
+  return password.startsWith('$2a$') || password.startsWith('$2b$') || password.startsWith('$2y$');
+}
+
 export async function login(data: z.infer<typeof loginSchema>) {
   const validation = loginSchema.safeParse(data);
 
@@ -71,7 +76,28 @@ export async function login(data: z.infer<typeof loginSchema>) {
       const result = await client.query('SELECT * FROM promotors WHERE email = $1', [email]);
       const user = result.rows[0];
 
-      if (!user || user.password !== password) {
+      if (!user) {
+        return { success: false, error: 'Invalid credentials' };
+      }
+
+      let passwordMatches = false;
+
+      if (looksLikePasswordHash(user.password)) {
+        passwordMatches = await bcrypt.compare(password, user.password);
+      } else {
+        passwordMatches = user.password === password;
+
+        if (passwordMatches) {
+          const hashedPassword = await bcrypt.hash(password, 12);
+
+          await client.query('UPDATE promotors SET password = $1 WHERE id = $2', [
+            hashedPassword,
+            user.id,
+          ]);
+        }
+      }
+
+      if (!passwordMatches) {
         return { success: false, error: 'Invalid credentials' };
       }
     } finally {
@@ -106,9 +132,11 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
         return { success: false, error: 'Email already registered' };
       }
 
+      const hashedPassword = await bcrypt.hash(password, 12);
+
       await client.query(
         'INSERT INTO promotors (full_name, email, password) VALUES ($1, $2, $3)',
-        [fullName, email, password]
+        [fullName, email, hashedPassword]
       );
     } finally {
       client.release();
