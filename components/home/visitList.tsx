@@ -15,7 +15,7 @@ export function VisitList({ visits }: VisitListProps) {
         <h2 className="text-2xl font-bold">Visitas</h2>
         <Link
           href="/visitas/nova"
-          className="rounded-md bg-[#009c6c] px-4 py-2 font-bold text-white transition hover:bg-[#007a55]"
+          className="rounded-md bg-[#009c6c] px-4 py-2 font-bold text-white transition hover:bg-[#009c6c]/80"
         >
           Nova Visita
         </Link>
