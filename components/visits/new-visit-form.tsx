@@ -159,7 +159,7 @@ export function NewVisitForm() {
   } = useForm<VisitFormValues>({
     defaultValues: {
       establishment: '',
-      date: '',
+      date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
       products: [
         {
           name: '',
@@ -236,7 +236,7 @@ export function NewVisitForm() {
 
     reset({
       establishment: '',
-      date: '',
+      date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
       products: [
         {
           name: '',
@@ -473,12 +473,20 @@ export function NewVisitForm() {
                 placeholder="dd/mm/aaaa"
                 value={visitDate}
                 className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
-                onChange={(event) =>
-                  setValue('date', event.target.value, {
+                onChange={(event) => {
+                  let v = event.target.value.replace(/\D/g, '');
+                  if (v.length > 8) v = v.slice(0, 8);
+                  if (v.length > 4) {
+                    v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
+                  } else if (v.length > 2) {
+                    v = `${v.slice(0, 2)}/${v.slice(2)}`;
+                  }
+                  setValue('date', v, {
                     shouldDirty: true,
                     shouldTouch: true,
-                  })
-                }
+                    shouldValidate: true,
+                  });
+                }}
               />
 
               <button
@@ -556,12 +564,20 @@ export function NewVisitForm() {
                   <label className="block text-sm font-medium">Validade</label>
                   <ProductExpirationDateField
                     value={watchedProducts[productIndex]?.expirationDate ?? ''}
-                    onChange={(value) =>
-                      setValue(`products.${productIndex}.expirationDate`, value, {
+                    onChange={(value) => {
+                      let v = value.replace(/\D/g, '');
+                      if (v.length > 8) v = v.slice(0, 8);
+                      if (v.length > 4) {
+                        v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
+                      } else if (v.length > 2) {
+                        v = `${v.slice(0, 2)}/${v.slice(2)}`;
+                      }
+                      setValue(`products.${productIndex}.expirationDate`, v, {
                         shouldDirty: true,
                         shouldTouch: true,
-                      })
-                    }
+                        shouldValidate: true,
+                      });
+                    }}
                   />
                 </div>
               </div>
