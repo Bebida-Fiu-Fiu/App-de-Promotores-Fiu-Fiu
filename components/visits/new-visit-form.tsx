@@ -19,6 +19,7 @@ const productSuggestions = [
   'ICE Maracujá e Morango',
   'Licor Banoffe',
   'Licor Suspiro',
+  'Licor Brigadeiro',
   'Licor Churros',
   'Licor Tortinha de Limão',
   'Licor Paçoca'
