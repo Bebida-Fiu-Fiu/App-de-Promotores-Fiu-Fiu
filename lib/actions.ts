@@ -32,11 +32,11 @@ function productHasIndefiniteExpiration(name: string) {
 
 const visitProductSchema = z.object({
   name: z.string().min(1),
-  quantity: z.number().gt(0),
+  quantity: z.number().min(0),
   packageType: z.enum(['unidade', 'pack', 'caixa']),
   expirationDate: z.string(),
 }).superRefine((product, ctx) => {
-  if (productHasIndefiniteExpiration(product.name)) {
+  if (productHasIndefiniteExpiration(product.name) || product.quantity <= 0) {
     return;
   }
 
@@ -53,6 +53,19 @@ const visitSchema = z.object({
   establishment: z.string().min(1),
   date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
   products: z.array(visitProductSchema).min(1),
+});
+
+const visitDraftSchema = z.object({
+  establishment: z.string().trim().optional().default(''),
+  date: z.string().trim().optional().default(''),
+  products: z.array(
+    z.object({
+      name: z.string().trim().optional().default(''),
+      quantity: z.number().optional().default(0),
+      packageType: z.enum(['unidade', 'pack', 'caixa']).optional().default('unidade'),
+      expirationDate: z.string().trim().optional().default(''),
+    })
+  ).optional().default([]),
 });
 
 const clientSearchSchema = z.object({
@@ -115,6 +128,34 @@ async function getCurrentPromotorId() {
   } finally {
     client.release();
   }
+}
+
+function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['products']) {
+  return products
+    .filter((product) => {
+      return (
+        product.name.trim() ||
+        Number(product.quantity) > 0 ||
+        product.expirationDate.trim()
+      );
+    })
+    .map((product) => ({
+      name: product.name.trim(),
+      quantity: Number(product.quantity) || 0,
+      unit: product.packageType,
+      expirationDate: product.expirationDate.trim(),
+    }));
+}
+
+function isVisitEditable(createdAt: string | Date, isDraft: boolean) {
+  if (isDraft) {
+    return true;
+  }
+
+  const createdAtDate = createdAt instanceof Date ? createdAt : new Date(createdAt);
+  const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
+
+  return Date.now() - createdAtDate.getTime() <= sevenDaysInMs;
 }
 
 export async function login(data: z.infer<typeof loginSchema>) {
@@ -457,10 +498,10 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
   }
 }
 
-export async function createVisit(data: z.infer<typeof visitSchema>) {
-  const session = await getSession();
+export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: number) {
+  const promotorId = await getCurrentPromotorId();
 
-  if (!session) {
+  if (!promotorId) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -479,7 +520,9 @@ export async function createVisit(data: z.infer<typeof visitSchema>) {
   const products = validation.data.products.map((product) => {
     const expirationDate = productHasIndefiniteExpiration(product.name)
       ? 'indeterminado'
-      : parseDisplayDateToDatabase(product.expirationDate);
+      : product.quantity <= 0
+        ? ''
+        : parseDisplayDateToDatabase(product.expirationDate);
 
     return {
       name: product.name,
@@ -493,30 +536,172 @@ export async function createVisit(data: z.infer<typeof visitSchema>) {
     const client = await pool.connect();
 
     try {
-      const userResult = await client.query('SELECT id FROM promotors WHERE email = $1', [
-        session.email,
-      ]);
+      if (visitId) {
+        const existingVisit = await client.query(
+          'SELECT id, created_at, is_draft FROM visits WHERE id = $1 AND promotor_id = $2',
+          [visitId, promotorId]
+        );
 
-      const promotorId = userResult.rows[0]?.id;
+        if (!existingVisit.rowCount) {
+          return { success: false, error: 'Visita nao encontrada.' };
+        }
 
-      if (!promotorId) {
-        return { success: false, error: 'Usuario nao encontrado.' };
+        const visit = existingVisit.rows[0];
+
+        if (!isVisitEditable(visit.created_at, Boolean(visit.is_draft))) {
+          return { success: false, error: 'O prazo de 7 dias para editar esta visita já expirou.' };
+        }
+
+        await client.query(
+          `UPDATE visits
+           SET establishment = $1,
+               visit_date = $2,
+               products = $3::jsonb,
+               is_draft = FALSE,
+               updated_at = NOW()
+           WHERE id = $4 AND promotor_id = $5`,
+          [validation.data.establishment, visitDate, JSON.stringify(products), visitId, promotorId]
+        );
+      } else {
+        await client.query(
+          `INSERT INTO visits (promotor_id, establishment, visit_date, products, is_draft)
+           VALUES ($1, $2, $3, $4::jsonb, FALSE)`,
+          [promotorId, validation.data.establishment, visitDate, JSON.stringify(products)]
+        );
       }
-
-      await client.query(
-        'INSERT INTO visits (promotor_id, establishment, visit_date, products) VALUES ($1, $2, $3, $4::jsonb)',
-        [promotorId, validation.data.establishment, visitDate, JSON.stringify(products)]
-      );
     } finally {
       client.release();
     }
 
     revalidatePath('/');
     revalidatePath('/visitas/nova');
+    if (visitId) {
+      revalidatePath(`/visitas/${visitId}`);
+      revalidatePath(`/visitas/${visitId}/editar`);
+    }
 
     return { success: true };
   } catch (error) {
     console.error('Create visit error:', error);
     return { success: false, error: 'Nao foi possivel salvar a visita.' };
+  }
+}
+
+export async function saveVisitDraft(
+  data: z.infer<typeof visitDraftSchema>,
+  visitId?: number
+) {
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const validation = visitDraftSchema.safeParse(data);
+
+  if (!validation.success) {
+    return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
+  }
+
+  const establishment = validation.data.establishment.trim() || null;
+  const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
+    ? parseDisplayDateToDatabase(validation.data.date)
+    : null;
+  const draftProducts = normalizeDraftProducts(validation.data.products);
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      if (visitId) {
+        const existingVisit = await client.query(
+          'SELECT id FROM visits WHERE id = $1 AND promotor_id = $2',
+          [visitId, promotorId]
+        );
+
+        if (!existingVisit.rowCount) {
+          return { success: false, error: 'Visita nao encontrada.' };
+        }
+
+        await client.query(
+          `UPDATE visits
+           SET establishment = $1,
+               visit_date = $2,
+               products = $3::jsonb,
+               is_draft = TRUE,
+               updated_at = NOW()
+           WHERE id = $4 AND promotor_id = $5`,
+          [establishment, visitDate, JSON.stringify(draftProducts), visitId, promotorId]
+        );
+
+        revalidatePath('/');
+        revalidatePath(`/visitas/${visitId}`);
+        revalidatePath(`/visitas/${visitId}/editar`);
+
+        return { success: true, visitId };
+      }
+
+      const result = await client.query(
+        `INSERT INTO visits (promotor_id, establishment, visit_date, products, is_draft)
+         VALUES ($1, $2, $3, $4::jsonb, TRUE)
+         RETURNING id`,
+        [promotorId, establishment, visitDate, JSON.stringify(draftProducts)]
+      );
+
+      const createdVisitId = Number(result.rows[0]?.id);
+
+      revalidatePath('/');
+      revalidatePath('/visitas/nova');
+      revalidatePath(`/visitas/${createdVisitId}`);
+      revalidatePath(`/visitas/${createdVisitId}/editar`);
+
+      return { success: true, visitId: createdVisitId };
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Save visit draft error:', error);
+    return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
+  }
+}
+
+export async function deleteVisitDraft(visitId: number) {
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      const existingVisit = await client.query(
+        'SELECT id, is_draft FROM visits WHERE id = $1 AND promotor_id = $2',
+        [visitId, promotorId]
+      );
+
+      if (!existingVisit.rowCount) {
+        return { success: false, error: 'Rascunho nao encontrado.' };
+      }
+
+      if (!existingVisit.rows[0].is_draft) {
+        return { success: false, error: 'Apenas rascunhos podem ser excluidos.' };
+      }
+
+      await client.query('DELETE FROM visits WHERE id = $1 AND promotor_id = $2', [visitId, promotorId]);
+    } finally {
+      client.release();
+    }
+
+    revalidatePath('/');
+    revalidatePath('/visitas/nova');
+    revalidatePath(`/visitas/${visitId}`);
+    revalidatePath(`/visitas/${visitId}/editar`);
+
+    return { success: true };
+  } catch (error) {
+    console.error('Delete visit draft error:', error);
+    return { success: false, error: 'Nao foi possivel excluir o rascunho.' };
   }
 }

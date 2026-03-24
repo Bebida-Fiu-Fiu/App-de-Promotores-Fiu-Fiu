@@ -1,11 +1,12 @@
 'use client';
 
-import { Building2, CalendarDays, ChevronDown, Search } from 'lucide-react';
+import { Building2, CalendarDays, ChevronDown, Search, Trash2 } from 'lucide-react';
 import { startTransition, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 
-import { createVisit, searchClients } from '@/lib/actions';
+import { createVisit, saveVisitDraft, searchClients } from '@/lib/actions';
+import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 
 const productSuggestions = [
   'Cajazinha',
@@ -234,11 +235,16 @@ function hasIndefiniteExpiration(productName: string) {
   return productsWithIndefiniteExpiration.has(productName.trim());
 }
 
-function getMissingInformationMessage(
-  data: VisitFormValues,
-  hasSelectedClient: boolean
-) {
-  if (!hasSelectedClient || !data.establishment.trim()) {
+function shouldSkipExpiration(product: VisitFormValues['products'][number] | undefined) {
+  if (!product) {
+    return false;
+  }
+
+  return hasIndefiniteExpiration(product.name) || Number(product.quantity) <= 0;
+}
+
+function getMissingInformationMessage(data: VisitFormValues) {
+  if (!data.establishment.trim()) {
     return 'Selecione um estabelecimento antes de enviar a visita.';
   }
 
@@ -250,8 +256,8 @@ function getMissingInformationMessage(
     return (
       !product.name.trim() ||
       !Number.isFinite(product.quantity) ||
-      product.quantity <= 0 ||
-      (!hasIndefiniteExpiration(product.name) && !isCompleteDate(product.expirationDate))
+      product.quantity < 0 ||
+      (!shouldSkipExpiration(product) && !isCompleteDate(product.expirationDate))
     );
   });
 
@@ -263,8 +269,8 @@ function getMissingInformationMessage(
       return `Preencha o nome do produto ${productNumber}.`;
     }
 
-    if (!Number.isFinite(product.quantity) || product.quantity <= 0) {
-      return `Informe uma quantidade maior que zero para o produto ${productNumber}.`;
+    if (!Number.isFinite(product.quantity) || product.quantity < 0) {
+      return `Informe uma quantidade zero ou maior para o produto ${productNumber}.`;
     }
 
     return `Informe a validade do produto ${productNumber} no formato dd/mm/aaaa.`;
@@ -273,7 +279,17 @@ function getMissingInformationMessage(
   return null;
 }
 
-export function NewVisitForm() {
+type NewVisitFormProps = {
+  visitId?: number;
+  isDraft?: boolean;
+  initialData?: Partial<VisitFormValues>;
+};
+
+export function NewVisitForm({
+  visitId,
+  isDraft = false,
+  initialData,
+}: NewVisitFormProps) {
   const router = useRouter();
   const visitDatePickerRef = useRef<HTMLInputElement | null>(null);
   const [modalMessage, setModalMessage] = useState<string | null>(null);
@@ -300,21 +316,24 @@ export function NewVisitForm() {
     register,
     control,
     handleSubmit,
+    getValues,
     setValue,
     reset,
     formState: { isSubmitting },
   } = useForm<VisitFormValues>({
     defaultValues: {
-      establishment: '',
-      date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
-      products: [
-        {
-          name: '',
-          quantity: 0,
-          packageType: 'unidade',
-          expirationDate: '',
-        },
-      ],
+      establishment: initialData?.establishment ?? '',
+      date: initialData?.date ?? formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      products: initialData?.products?.length
+        ? initialData.products
+        : [
+            {
+              name: '',
+              quantity: 0,
+              packageType: 'unidade',
+              expirationDate: '',
+            },
+          ],
     },
   });
 
@@ -322,12 +341,16 @@ export function NewVisitForm() {
     control,
     name: 'date',
   }) ?? '';
+  const watchedEstablishment = useWatch({
+    control,
+    name: 'establishment',
+  }) ?? '';
   const watchedProducts = useWatch({
     control,
     name: 'products',
   }) ?? [];
 
-  const { fields, append } = useFieldArray({
+  const { fields, append, remove } = useFieldArray({
     control,
     name: 'products',
   });
@@ -392,10 +415,7 @@ export function NewVisitForm() {
   };
 
   const onSubmit = async (data: VisitFormValues) => {
-    const missingInformationMessage = getMissingInformationMessage(
-      data,
-      Boolean(selectedClient)
-    );
+    const missingInformationMessage = getMissingInformationMessage(data);
 
     if (missingInformationMessage) {
       setFormError(missingInformationMessage);
@@ -403,7 +423,7 @@ export function NewVisitForm() {
     }
 
     setFormError(null);
-    const result = await createVisit(data);
+    const result = await createVisit(data, visitId);
 
     if (!result.success) {
       setModalMode('error');
@@ -428,7 +448,27 @@ export function NewVisitForm() {
     setSearchResults([]);
     setSearchError(null);
     setModalMode('success');
-    setModalMessage('Visita cadastrada com sucesso.');
+    setModalMessage(visitId ? 'Visita atualizada com sucesso.' : 'Visita cadastrada com sucesso.');
+  };
+
+  const handleSaveDraft = async () => {
+    setFormError(null);
+
+    const result = await saveVisitDraft(getValues(), visitId);
+
+    if (!result.success) {
+      setModalMode('error');
+      setModalMessage(result.error ?? 'Nao foi possivel salvar o rascunho.');
+      return;
+    }
+
+    if (result.visitId) {
+      router.push(`/visitas/${result.visitId}/editar`);
+      router.refresh();
+      return;
+    }
+
+    router.refresh();
   };
 
   return (
@@ -631,11 +671,17 @@ export function NewVisitForm() {
                 {isSearching ? 'Buscando...' : 'Buscar estabelecimento'}
               </button>
 
-              {selectedClient && (
+              {(selectedClient || watchedEstablishment) && (
                 <div className="rounded-md border border-[#009c6c] bg-[#009c6c]/15 p-3 text-sm">
-                  <p className="font-semibold text-white">{buildEstablishmentLabel(selectedClient)}</p>
-                  <p className="mt-1 text-xs text-white/75">{buildClientSubtitle(selectedClient)}</p>
-                  <p className="mt-1 text-xs text-white/75">Documento: {selectedClient.document}</p>
+                  <p className="font-semibold text-white">
+                    {selectedClient ? buildEstablishmentLabel(selectedClient) : watchedEstablishment}
+                  </p>
+                  {selectedClient && (
+                    <>
+                      <p className="mt-1 text-xs text-white/75">{buildClientSubtitle(selectedClient)}</p>
+                      <p className="mt-1 text-xs text-white/75">Documento: {selectedClient.document}</p>
+                    </>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -740,20 +786,51 @@ export function NewVisitForm() {
         <div className="mt-7 space-y-3">
           {fields.map((field, productIndex) => (
             <div key={field.id} className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
-              <div className="space-y-1">
-                <label className="block text-sm font-medium">Produto</label>
-                <input type="hidden" {...register(`products.${productIndex}.name`)} />
-                <ProductSelectField
-                  value={watchedProducts[productIndex]?.name ?? ''}
-                  onChange={(value) => {
+              <div className="flex items-end justify-between gap-3">
+                <div className="flex-1 space-y-1">
+                  <label className="block text-sm font-medium">Produto</label>
+                  <input type="hidden" {...register(`products.${productIndex}.name`)} />
+                  <ProductSelectField
+                    value={watchedProducts[productIndex]?.name ?? ''}
+                    onChange={(value) => {
+                      setFormError(null);
+                      setValue(`products.${productIndex}.name`, value, {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      });
+                    }}
+                  />
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
                     setFormError(null);
-                    setValue(`products.${productIndex}.name`, value, {
-                      shouldDirty: true,
-                      shouldTouch: true,
-                      shouldValidate: true,
-                    });
+
+                    if (fields.length === 1) {
+                      setValue('products', [
+                        {
+                          name: '',
+                          quantity: 0,
+                          packageType: 'unidade',
+                          expirationDate: '',
+                        },
+                      ], {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      });
+                      return;
+                    }
+
+                    remove(productIndex);
                   }}
-                />
+                  className="inline-flex h-8 items-center justify-center rounded-md border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 text-sm text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+                  aria-label={`Excluir produto ${productIndex + 1}`}
+                >
+                  <Trash2 size={14} />
+                </button>
               </div>
 
               <div className="grid grid-cols-1 gap-3">
@@ -766,7 +843,17 @@ export function NewVisitForm() {
                     className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-center text-sm outline-none"
                     {...register(`products.${productIndex}.quantity`, {
                       valueAsNumber: true,
-                      onChange: () => setFormError(null),
+                      onChange: (event) => {
+                        setFormError(null);
+
+                        if (Number(event.target.value) <= 0) {
+                          setValue(`products.${productIndex}.expirationDate`, '', {
+                            shouldDirty: true,
+                            shouldTouch: true,
+                            shouldValidate: true,
+                          });
+                        }
+                      },
                     })}
                   />
                 </div>
@@ -796,6 +883,10 @@ export function NewVisitForm() {
                   {hasIndefiniteExpiration(watchedProducts[productIndex]?.name ?? '') ? (
                     <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
                       Validade indeterminada
+                    </div>
+                  ) : Number(watchedProducts[productIndex]?.quantity ?? 0) <= 0 ? (
+                    <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
+                      Sem validade
                     </div>
                   ) : (
                     <ProductExpirationDateField
@@ -847,13 +938,26 @@ export function NewVisitForm() {
           </p>
         )}
 
-        <div className="mt-7 flex justify-end">
+        <div className="mt-7 flex flex-wrap justify-end gap-3">
+          {visitId && isDraft && (
+            <DeleteDraftButton
+              visitId={visitId}
+              className="min-w-28 rounded-md border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 py-1.5 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+            />
+          )}
+          <button
+            type="button"
+            onClick={() => void handleSaveDraft()}
+            className="min-w-28 rounded-md border border-white/20 bg-white/10 px-4 py-1.5 text-sm text-white transition hover:bg-white/20"
+          >
+            Salvar rascunho
+          </button>
           <button
             type="submit"
             disabled={isSubmitting}
             className="min-w-28 rounded-md border border-[#707070] bg-white/20 px-4 py-1.5 text-sm text-white transition hover:bg-[#e9e9e4]"
           >
-            {isSubmitting ? 'Salvando...' : 'Enviar'}
+            {isSubmitting ? 'Salvando...' : isDraft ? 'Publicar visita' : visitId ? 'Salvar alterações' : 'Enviar'}
           </button>
         </div>
       </form>

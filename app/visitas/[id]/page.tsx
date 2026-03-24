@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
+import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { getSession } from '@/lib/auth';
 import { pool } from '@/lib/db';
 
@@ -12,7 +13,11 @@ type VisitProduct = {
   expirationDate: string;
 };
 
-function formatDatabaseDateToDisplay(value: string | Date) {
+function formatDatabaseDateToDisplay(value: string | Date | null) {
+  if (!value) {
+    return 'Data nao definida';
+  }
+
   const date = value instanceof Date ? value : new Date(value);
 
   if (Number.isNaN(date.getTime())) {
@@ -41,6 +46,8 @@ export default async function VisitDetailsPage({
         establishment: string;
         visitDate: string;
         products: VisitProduct[];
+        isDraft: boolean;
+        canEdit: boolean;
       }
     | null = null;
 
@@ -50,7 +57,7 @@ export default async function VisitDetailsPage({
       const [userResult, visitResult] = await Promise.all([
         client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
         client.query(
-          `SELECT v.establishment, v.visit_date, v.products
+          `SELECT v.establishment, v.visit_date, v.products, v.is_draft, v.created_at
            FROM visits v
            INNER JOIN promotors p ON p.id = v.promotor_id
            WHERE v.id = $1 AND p.email = $2`,
@@ -63,9 +70,13 @@ export default async function VisitDetailsPage({
       if (visitResult.rowCount) {
         const row = visitResult.rows[0];
         visit = {
-          establishment: row.establishment,
+          establishment: row.establishment ?? 'Rascunho sem estabelecimento',
           visitDate: formatDatabaseDateToDisplay(row.visit_date),
           products: Array.isArray(row.products) ? row.products : [],
+          isDraft: Boolean(row.is_draft),
+          canEdit:
+            Boolean(row.is_draft) ||
+            Date.now() - new Date(row.created_at).getTime() <= 7 * 24 * 60 * 60 * 1000,
         };
       }
     } finally {
@@ -80,27 +91,57 @@ export default async function VisitDetailsPage({
   }
 
   return (
-    <main className="min-h-screen bg-[var(--background)] px-4 py-10 pb-28">
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(0,156,108,0.12),_transparent_32%),linear-gradient(180deg,_#0f2d3d_0%,_var(--background)_42%,_#091c27_100%)] px-4 py-10 pb-28">
       <Header fullName={fullName} />
 
       <section className="mx-auto w-full max-w-4xl px-6 pt-24">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-2xl font-bold">{visit.establishment}</h2>
-            <p className="mt-2 text-sm opacity-80">Data da visita: {visit.visitDate}</p>
-          </div>
+        <div className="rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.2)]">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+            <div className="space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[#8eb4c4]">
+                Detalhes da visita
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-3xl font-bold tracking-tight text-white">{visit.establishment}</h2>
+                {visit.isDraft && (
+                  <span className="rounded-full border border-[#ffe39d]/25 bg-[#ffe39d]/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#ffe39d]">
+                    Rascunho
+                  </span>
+                )}
+              </div>
+              <div className="inline-flex items-center rounded-full border border-white/10 bg-black/10 px-3 py-1 text-xs font-medium text-[#b9d0d9]">
+                Data da visita: {visit.visitDate}
+              </div>
+            </div>
 
-          <Link
-            href="/"
-            className="rounded-md border border-white/20 px-4 py-2 text-sm font-semibold transition hover:bg-white/10"
-          >
-            Voltar
-          </Link>
+            <div className="flex flex-wrap gap-2 lg:max-w-[360px] lg:justify-end">
+              {visit.canEdit && (
+                <Link
+                  href={`/visitas/${id}/editar`}
+                  className="inline-flex h-11 items-center justify-center rounded-xl border border-[#00c487]/35 bg-[#009c6c]/18 px-4 text-sm font-semibold text-[#dcfff3] transition hover:bg-[#009c6c]/28"
+                >
+                  {visit.isDraft ? 'Continuar rascunho' : 'Editar'}
+                </Link>
+              )}
+              {visit.isDraft && (
+                <DeleteDraftButton
+                  visitId={Number(id)}
+                  className="inline-flex h-11 items-center justify-center rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+                />
+              )}
+              <Link
+                href="/"
+                className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
+              >
+                Voltar
+              </Link>
+            </div>
+          </div>
         </div>
 
         <div className="mt-6">
           {visit.products.length === 0 ? (
-            <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm opacity-80">
+            <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-7 text-sm text-white/75 shadow-[0_16px_35px_rgba(0,0,0,0.16)]">
               Nenhum produto registrado nesta visita.
             </div>
           ) : (
@@ -108,27 +149,27 @@ export default async function VisitDetailsPage({
               {visit.products.map((product, index) => (
                 <article
                   key={`${product.name}-${index}`}
-                  className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
+                  className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-5 shadow-[0_20px_45px_rgba(0,0,0,0.18)]"
                 >
                   <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
                     Produto {index + 1}
                   </p>
-                  <h3 className="mt-2 text-lg font-bold text-white">{product.name}</h3>
+                  <h3 className="mt-2 text-lg font-bold text-white">{product.name || 'Produto sem nome'}</h3>
 
                   <div className="mt-4 grid gap-3 sm:grid-cols-3">
                     <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
                       <p className="text-xs uppercase tracking-[0.18em] text-white/50">Quantidade</p>
-                      <p className="mt-2 text-sm font-semibold text-white">{product.quantity}</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{product.quantity ?? 0}</p>
                     </div>
 
                     <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
                       <p className="text-xs uppercase tracking-[0.18em] text-white/50">Unidade</p>
-                      <p className="mt-2 text-sm font-semibold text-white">{product.unit}</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{product.unit || '-'}</p>
                     </div>
 
                     <div className="rounded-xl border border-white/10 bg-black/10 px-3 py-3">
                       <p className="text-xs uppercase tracking-[0.18em] text-white/50">Validade</p>
-                      <p className="mt-2 text-sm font-semibold text-white">{product.expirationDate}</p>
+                      <p className="mt-2 text-sm font-semibold text-white">{product.expirationDate || '-'}</p>
                     </div>
                   </div>
                 </article>

@@ -1,49 +1,89 @@
 import Link from 'next/link';
 
+import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+
 type VisitListProps = {
   visits: {
     id: number;
     establishment: string;
     visitDate: string;
+    isDraft: boolean;
+    canEdit: boolean;
   }[];
 };
 
 export function VisitList({ visits }: VisitListProps) {
   return (
     <section className="mx-auto w-full max-w-4xl px-6 pt-24">
-      <div className="flex items-start justify-between">
-        <h2 className="text-2xl font-bold">Visitas</h2>
+      <div className="flex flex-col gap-4 rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-5 py-5 shadow-[0_20px_50px_rgba(0,0,0,0.2)] sm:flex-row sm:items-end sm:justify-between">
+        <div className="space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[#8eb4c4]">
+            Painel de visitas
+          </p>
+          <div className="space-y-1">
+            <h2 className="text-3xl font-bold tracking-tight text-white">Visitas</h2>
+            <p className="max-w-xl text-sm text-[#b6cfd9]">
+              Acompanhe rascunhos e relatórios recentes em uma lista mais clara e rápida de usar.
+            </p>
+          </div>
+        </div>
+
         <Link
           href="/visitas/nova"
-          className="rounded-md bg-[#009c6c] px-4 py-2 font-bold text-white transition hover:bg-[#009c6c]/80"
+          className="inline-flex h-11 items-center justify-center rounded-xl bg-[#009c6c] px-5 text-sm font-bold text-white shadow-[0_12px_30px_rgba(0,156,108,0.28)] transition hover:-translate-y-0.5 hover:bg-[#00b57d]"
         >
           Nova Visita
         </Link>
       </div>
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2">
+      <div className="mt-6 grid gap-4">
         {visits.length === 0 ? (
-          <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm opacity-80">
+          <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-7 text-sm text-white/75 shadow-[0_16px_35px_rgba(0,0,0,0.16)]">
             Nenhuma visita cadastrada ainda.
           </div>
         ) : (
           visits.map((visit) => (
             <article
               key={visit.id}
-              className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
+              className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-5 shadow-[0_20px_45px_rgba(0,0,0,0.18)] transition hover:border-white/20 hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.1),rgba(255,255,255,0.05))]"
             >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-bold text-white">{visit.establishment}</h3>
-                  <p className="mt-2 text-sm text-white/70">Data: {visit.visitDate}</p>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="space-y-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-xl font-bold leading-tight text-white">{visit.establishment}</h3>
+                    {visit.isDraft && (
+                      <span className="rounded-full border border-[#ffe39d]/25 bg-[#ffe39d]/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.22em] text-[#ffe39d]">
+                        Rascunho
+                      </span>
+                    )}
+                  </div>
+                  <div className="inline-flex items-center rounded-full border border-white/10 bg-black/10 px-3 py-1 text-xs font-medium text-[#b9d0d9]">
+                    Data da visita: {visit.visitDate}
+                  </div>
                 </div>
 
-                <Link
-                  href={`/visitas/${visit.id}`}
-                  className="rounded-md border border-white/20 px-3 py-1.5 text-xs font-semibold transition hover:bg-white/10"
-                >
-                  Ver
-                </Link>
+                <div className="flex flex-wrap gap-2 sm:justify-end">
+                  <Link
+                    href={`/visitas/${visit.id}`}
+                    className="inline-flex h-10 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
+                  >
+                    Ver
+                  </Link>
+                  {visit.canEdit && (
+                    <Link
+                      href={`/visitas/${visit.id}/editar`}
+                      className="inline-flex h-10 items-center justify-center rounded-xl border border-[#00c487]/35 bg-[#009c6c]/18 px-4 text-sm font-semibold text-[#dcfff3] transition hover:bg-[#009c6c]/28"
+                    >
+                      {visit.isDraft ? 'Continuar' : 'Editar'}
+                    </Link>
+                  )}
+                  {visit.isDraft && (
+                    <DeleteDraftButton
+                      visitId={visit.id}
+                      className="inline-flex h-10 items-center justify-center rounded-xl border border-[#ff8c8c]/25 bg-[#5c1f1f]/30 px-4 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+                    />
+                  )}
+                </div>
               </div>
             </article>
           ))
