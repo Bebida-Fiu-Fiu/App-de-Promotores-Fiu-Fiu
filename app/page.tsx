@@ -3,6 +3,7 @@ import { redirect } from 'next/navigation';
 import { getSession } from '@/lib/auth';
 import { pool } from '@/lib/db';
 import { Header } from '@/components/home/header';
+import { AppTabs } from '@/components/home/app-tabs';
 import { VisitList } from '@/components/home/visitList';
 
 type VisitListItem = {
@@ -61,8 +62,9 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="min-h-screen bg-[var(--background)] px-4 py-10 pb-28">
+    <main className="min-h-screen bg-[var(--background)] px-4 py-15">
       <Header fullName={fullName} />
+      <AppTabs current="visitas" />
       <VisitList visits={visits} />
     </main>
   );

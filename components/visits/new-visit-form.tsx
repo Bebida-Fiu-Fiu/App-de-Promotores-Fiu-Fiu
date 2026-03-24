@@ -292,6 +292,8 @@ export function NewVisitForm() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
+  const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
 
   const {
     register,
@@ -337,11 +339,24 @@ export function NewVisitForm() {
     }));
   };
 
+  const handleSearchModeChange = (mode: 'agenda' | 'general') => {
+    setClientSearchMode(mode);
+    setShowAdvancedAgendaSearch(false);
+    setSearchResults([]);
+    setSearchError(null);
+    setSelectedClient(null);
+    setValue('establishment', '', {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
+  };
+
   const handleSearchClients = async () => {
     setSearchError(null);
     setIsSearching(true);
 
-    const result = await searchClients(searchFilters);
+    const result = await searchClients(searchFilters, clientSearchMode);
 
     startTransition(() => {
       setIsSearching(false);
@@ -355,7 +370,11 @@ export function NewVisitForm() {
       setSearchResults(result.clients as ClientSearchResult[]);
 
       if (result.clients.length === 0) {
-        setSearchError('Nenhum estabelecimento encontrado com esses filtros.');
+        setSearchError(
+          clientSearchMode === 'agenda'
+            ? 'Nenhum cliente encontrado na agenda com esses filtros.'
+            : 'Nenhum estabelecimento encontrado na busca geral com esses filtros.'
+        );
       }
     });
   };
@@ -464,98 +483,142 @@ export function NewVisitForm() {
             <div className="grid grid-cols-1 gap-3">
               <input type="hidden" {...register('establishment')} />
 
+              <div className="space-y-2">
+                <label className="block text-xs font-medium text-white/80">Modo de pesquisa</label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSearchModeChange('agenda')}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      clientSearchMode === 'agenda'
+                        ? 'border-[#009c6c] bg-[#009c6c] text-white'
+                        : 'border-white/15 bg-white/5 text-white/75 hover:bg-white/10'
+                    }`}
+                  >
+                    Agenda
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSearchModeChange('general')}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      clientSearchMode === 'general'
+                        ? 'border-[#009c6c] bg-[#009c6c] text-white'
+                        : 'border-white/15 bg-white/5 text-white/75 hover:bg-white/10'
+                    }`}
+                  >
+                    Geral
+                  </button>
+                </div>
+              </div>
+
               <div className="space-y-1">
-                <label className="block text-xs font-medium text-white/80">Nome</label>
+                <label className="block text-xs font-medium text-white/80">
+                  {clientSearchMode === 'agenda' ? 'Apelido' : 'Nome'}
+                </label>
                 <input
                   type="text"
                   value={searchFilters.clientName}
-                  placeholder="Razao social"
+                  placeholder={clientSearchMode === 'agenda' ? 'Apelido salvo na agenda' : 'Razao social'}
                   className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                   onChange={(event) => handleFilterChange('clientName', event.target.value)}
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="block text-xs font-medium text-white/80">Nome fantasia</label>
-                <input
-                  type="text"
-                  value={searchFilters.fantasyName}
-                  placeholder="Nome fantasia"
-                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                  onChange={(event) => handleFilterChange('fantasyName', event.target.value)}
-                />
-              </div>
+              {clientSearchMode === 'agenda' && (
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedAgendaSearch((current) => !current)}
+                  className="rounded-md border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
+                >
+                  {showAdvancedAgendaSearch ? 'Ocultar mais informações' : 'Pesquisar com mais informações'}
+                </button>
+              )}
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="block text-xs font-medium text-white/80">Documento</label>
-                  <input
-                    type="text"
-                    value={searchFilters.document}
-                    placeholder="CPF/CNPJ"
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                    onChange={(event) => handleFilterChange('document', event.target.value)}
-                  />
-                </div>
+              {(clientSearchMode === 'general' || showAdvancedAgendaSearch) && (
+                <>
+                  <div className="space-y-1">
+                    <label className="block text-xs font-medium text-white/80">Nome fantasia</label>
+                    <input
+                      type="text"
+                      value={searchFilters.fantasyName}
+                      placeholder="Nome fantasia"
+                      className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                      onChange={(event) => handleFilterChange('fantasyName', event.target.value)}
+                    />
+                  </div>
 
-                <div className="space-y-1">
-                  <label className="block text-xs font-medium text-white/80">Cidade</label>
-                  <input
-                    type="text"
-                    value={searchFilters.city}
-                    placeholder="Cidade"
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                    onChange={(event) => handleFilterChange('city', event.target.value)}
-                  />
-                </div>
-              </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium text-white/80">Documento</label>
+                      <input
+                        type="text"
+                        value={searchFilters.document}
+                        placeholder="CPF/CNPJ"
+                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                        onChange={(event) => handleFilterChange('document', event.target.value)}
+                      />
+                    </div>
 
-              <div className="space-y-1">
-                <label className="block text-xs font-medium text-white/80">Endereco</label>
-                <input
-                  type="text"
-                  value={searchFilters.address}
-                  placeholder="Rua, avenida..."
-                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                  onChange={(event) => handleFilterChange('address', event.target.value)}
-                />
-              </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium text-white/80">Cidade</label>
+                      <input
+                        type="text"
+                        value={searchFilters.city}
+                        placeholder="Cidade"
+                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                        onChange={(event) => handleFilterChange('city', event.target.value)}
+                      />
+                    </div>
+                  </div>
 
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-1">
-                  <label className="block text-xs font-medium text-white/80">Numero</label>
-                  <input
-                    type="text"
-                    value={searchFilters.addressNumber}
-                    placeholder="Numero"
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                    onChange={(event) => handleFilterChange('addressNumber', event.target.value)}
-                  />
-                </div>
+                  <div className="space-y-1">
+                    <label className="block text-xs font-medium text-white/80">Endereco</label>
+                    <input
+                      type="text"
+                      value={searchFilters.address}
+                      placeholder="Rua, avenida..."
+                      className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                      onChange={(event) => handleFilterChange('address', event.target.value)}
+                    />
+                  </div>
 
-                <div className="space-y-1">
-                  <label className="block text-xs font-medium text-white/80">Bairro</label>
-                  <input
-                    type="text"
-                    value={searchFilters.neighborhood}
-                    placeholder="Bairro"
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                    onChange={(event) => handleFilterChange('neighborhood', event.target.value)}
-                  />
-                </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium text-white/80">Numero</label>
+                      <input
+                        type="text"
+                        value={searchFilters.addressNumber}
+                        placeholder="Numero"
+                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                        onChange={(event) => handleFilterChange('addressNumber', event.target.value)}
+                      />
+                    </div>
 
-                <div className="space-y-1">
-                  <label className="block text-xs font-medium text-white/80">Estado</label>
-                  <input
-                    type="text"
-                    value={searchFilters.state}
-                    placeholder="UF"
-                    maxLength={2}
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm uppercase outline-none"
-                    onChange={(event) => handleFilterChange('state', event.target.value.toUpperCase())}
-                  />
-                </div>
-              </div>
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium text-white/80">Bairro</label>
+                      <input
+                        type="text"
+                        value={searchFilters.neighborhood}
+                        placeholder="Bairro"
+                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                        onChange={(event) => handleFilterChange('neighborhood', event.target.value)}
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-medium text-white/80">Estado</label>
+                      <input
+                        type="text"
+                        value={searchFilters.state}
+                        placeholder="UF"
+                        maxLength={2}
+                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm uppercase outline-none"
+                        onChange={(event) => handleFilterChange('state', event.target.value.toUpperCase())}
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
 
               <button
                 type="button"

@@ -66,6 +66,15 @@ const clientSearchSchema = z.object({
   state: z.string().trim().optional().default(''),
 });
 
+const agendaEntrySchema = z.object({
+  clientId: z.coerce.number().int().positive(),
+  weekday: z.enum(['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo']),
+  nickname: z.string().trim().optional().default(''),
+  frequency: z.string().trim().optional().default(''),
+  notes: z.string().trim().optional().default(''),
+  isPlanned: z.boolean().optional().default(false),
+});
+
 function parseDisplayDateToDatabase(value: string) {
   const [day, month, year] = value.split('/');
 
@@ -80,8 +89,32 @@ function normalizeDigits(value: string) {
   return value.replace(/\D/g, '');
 }
 
+function normalizeTextSearch(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
 function looksLikePasswordHash(password: string) {
   return password.startsWith('$2a$') || password.startsWith('$2b$') || password.startsWith('$2y$');
+}
+
+async function getCurrentPromotorId() {
+  const session = await getSession();
+
+  if (!session) {
+    return null;
+  }
+
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query('SELECT id FROM promotors WHERE email = $1', [session.email]);
+    return result.rows[0]?.id ?? null;
+  } finally {
+    client.release();
+  }
 }
 
 export async function login(data: z.infer<typeof loginSchema>) {
@@ -178,7 +211,10 @@ export async function logout() {
   await clearSession();
 }
 
-export async function searchClients(filters: z.infer<typeof clientSearchSchema>) {
+export async function searchClients(
+  filters: z.infer<typeof clientSearchSchema>,
+  scope: 'agenda' | 'general' = 'general'
+) {
   const validation = clientSearchSchema.safeParse(filters);
 
   if (!validation.success) {
@@ -228,6 +264,102 @@ export async function searchClients(filters: z.infer<typeof clientSearchSchema>)
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
+  if (scope === 'agenda') {
+    const promotorId = await getCurrentPromotorId();
+
+    if (!promotorId) {
+      return { success: false, error: 'Sessao expirada. Faca login novamente.', clients: [] };
+    }
+
+    const agendaConditions: string[] = [];
+    const agendaValues: Array<string | number> = [promotorId];
+    const textNormalizationSql = "translate(lower($VALUE), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')";
+
+    const addAgendaCondition = (sql: string, value: string) => {
+      const trimmedValue = value.trim();
+
+      if (!trimmedValue) {
+        return;
+      }
+
+      agendaValues.push(`%${normalizeTextSearch(trimmedValue)}%`);
+      agendaConditions.push(sql.replaceAll('$VALUE', `$${agendaValues.length}`));
+    };
+
+    addAgendaCondition(
+      `(
+        translate(lower(c.client_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
+        OR translate(lower(c.fantasy_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
+        OR translate(lower(coalesce(a.nickname, '')), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
+      )`,
+      clientName
+    );
+    addAgendaCondition(
+      `(
+        translate(lower(c.fantasy_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
+        OR translate(lower(coalesce(a.nickname, '')), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
+      )`,
+      fantasyName
+    );
+    addAgendaCondition(
+      `translate(lower(c.city), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
+      city
+    );
+    addAgendaCondition(
+      `translate(lower(c.address), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
+      address
+    );
+    addAgendaCondition('c.address_number ILIKE $VALUE', addressNumber);
+    addAgendaCondition(
+      `translate(lower(c.neighborhood), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
+      neighborhood
+    );
+    addAgendaCondition(
+      `translate(lower(c.state), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
+      state
+    );
+
+    if (normalizedDocument) {
+      agendaValues.push(`%${normalizedDocument}%`);
+      agendaConditions.push(
+        `regexp_replace(c.document, '[^0-9]', '', 'g') ILIKE $${agendaValues.length}`
+      );
+    }
+
+    try {
+      const client = await pool.connect();
+
+      try {
+        const result = await client.query(
+          `SELECT DISTINCT
+             c.id,
+             c.client_name,
+             c.fantasy_name,
+             c.document,
+             c.city,
+             c.address,
+             c.address_number,
+             c.neighborhood,
+             c.state
+           FROM promotor_client_agenda a
+           INNER JOIN clients c ON c.id = a.client_id
+           WHERE a.promotor_id = $1
+           ${agendaConditions.length > 0 ? `AND ${agendaConditions.join(' AND ')}` : ''}
+           ORDER BY c.fantasy_name ASC, c.client_name ASC
+           LIMIT 30`,
+          agendaValues
+        );
+
+        return { success: true, clients: result.rows };
+      } finally {
+        client.release();
+      }
+    } catch (error) {
+      console.error('Search agenda clients error:', error);
+      return { success: false, error: 'Nao foi possivel buscar os clientes da agenda.', clients: [] };
+    }
+  }
+
   try {
     const client = await pool.connect();
 
@@ -249,6 +381,79 @@ export async function searchClients(filters: z.infer<typeof clientSearchSchema>)
   } catch (error) {
     console.error('Search clients error:', error);
     return { success: false, error: 'Nao foi possivel buscar os estabelecimentos.', clients: [] };
+  }
+}
+
+export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>) {
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const validation = agendaEntrySchema.safeParse(data);
+
+  if (!validation.success) {
+    const fieldLabels: Record<string, string> = {
+      clientId: 'Buscar cliente na base',
+      weekday: 'Dia da semana',
+    };
+
+    const firstIssue = validation.error.issues[0];
+    const fieldName = firstIssue?.path[0];
+    const label =
+      typeof fieldName === 'string' ? fieldLabels[fieldName] : null;
+
+    return {
+      success: false,
+      error: label
+        ? `Preencha o campo obrigatório "${label}".`
+        : 'Preencha os dados obrigatórios da agenda.',
+    };
+  }
+
+  const { clientId, weekday, nickname, frequency, notes, isPlanned } = validation.data;
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      const existingClient = await client.query('SELECT 1 FROM clients WHERE id = $1', [clientId]);
+
+      if (!existingClient.rowCount) {
+        return { success: false, error: 'Cliente nao encontrado na base.' };
+      }
+
+      await client.query(
+        `INSERT INTO promotor_client_agenda (
+           promotor_id,
+           client_id,
+           weekday,
+           nickname,
+           frequency,
+           notes,
+           is_planned
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          promotorId,
+          clientId,
+          weekday,
+          nickname || null,
+          frequency || null,
+          notes || null,
+          isPlanned,
+        ]
+      );
+    } finally {
+      client.release();
+    }
+
+    revalidatePath('/agenda');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Create agenda entry error:', error);
+    return { success: false, error: 'Nao foi possivel adicionar o cliente na agenda.' };
   }
 }
 
