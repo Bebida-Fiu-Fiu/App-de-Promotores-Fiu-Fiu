@@ -5,7 +5,7 @@ import { startTransition, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 
-import { createVisit, saveVisitDraft, searchClients } from '@/lib/actions';
+import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 
 const productSuggestions = [
@@ -311,6 +311,7 @@ export function NewVisitForm({
   const [isSearching, setIsSearching] = useState(false);
   const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
   const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
+  const [homePath, setHomePath] = useState('/promotor');
 
   const {
     register,
@@ -354,6 +355,20 @@ export function NewVisitForm({
     control,
     name: 'products',
   });
+
+  useEffect(() => {
+    let isMounted = true;
+
+    void getSessionHomePath().then((path) => {
+      if (isMounted && path) {
+        setHomePath(path);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const handleFilterChange = (field: keyof ClientSearchFilters, value: string) => {
     setFormError(null);
@@ -487,7 +502,7 @@ export function NewVisitForm({
                   onClick={() => {
                     setModalMessage(null);
                     setModalMode(null);
-                    router.push('/');
+                    router.push(homePath);
                     router.refresh();
                   }}
                   className="rounded-md bg-[#009c6c] px-4 py-2 font-semibold text-white transition hover:bg-[#007a55]"

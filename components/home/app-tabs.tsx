@@ -1,12 +1,14 @@
 import Link from 'next/link';
+import { getHomePath, UserRole } from '@/lib/auth';
 
 type AppTabsProps = {
   current: 'visitas' | 'agenda';
+  role: UserRole;
 };
 
-export function AppTabs({ current }: AppTabsProps) {
+export function AppTabs({ current, role }: AppTabsProps) {
   const tabs = [
-    { href: '/', label: 'Visitas', key: 'visitas' },
+    { href: getHomePath(role), label: 'Visitas', key: 'visitas' },
     { href: '/agenda', label: 'Agenda', key: 'agenda' },
   ] as const;
 

@@ -38,7 +38,7 @@ export function LoginForm() {
       return;
     }
 
-    router.push('/');
+    router.push(result.homePath ?? '/promotor');
     router.refresh();
   };
 
@@ -80,6 +80,7 @@ export function LoginForm() {
             <p className="mt-1 text-sm text-red-200">{errors.password.message}</p>
           )}
         </div>
+
       </div>
 
       <button

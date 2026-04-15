@@ -81,6 +81,7 @@ Scripts incluidos no repositorio:
 
 - `database/create_promotors_table.sql`: cria a tabela `promotors`
 - `database/add_promotor_id_to_visits.sql`: adiciona `promotor_id` em `visits`
+- `database/create_commercial_submissions_table.sql`: cria a tabela `commercial_submissions` no mesmo banco do app
 
 Observacoes importantes:
 
@@ -88,12 +89,14 @@ Observacoes importantes:
 - a busca de estabelecimentos depende da tabela `clients`
 - o formulario de visitas espera que `visits` tenha, no minimo, as colunas `id`, `promotor_id`, `establishment`, `visit_date` e `products`
 - a tabela `clients` precisa conter os campos usados na busca, como `client_name`, `fantasy_name`, `document`, `city`, `address`, `address_number`, `neighborhood` e `state`
+- o formulario do comercial grava na tabela `commercial_submissions` no mesmo banco usado pelos demais usuarios
 
 Exemplo de ordem de execucao:
 
 1. execute `database/create_promotors_table.sql`
 2. garanta que a tabela `visits` ja exista
 3. execute `database/add_promotor_id_to_visits.sql`
+4. execute `database/create_commercial_submissions_table.sql`
 
 ## Como Rodar
 

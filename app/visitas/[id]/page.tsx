@@ -3,7 +3,7 @@ import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
-import { getSession } from '@/lib/auth';
+import { getHomePath, getSession } from '@/lib/auth';
 import { pool } from '@/lib/db';
 
 type VisitProduct = {
@@ -130,7 +130,7 @@ export default async function VisitDetailsPage({
                 />
               )}
               <Link
-                href="/"
+                href={getHomePath(session.role)}
                 className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
               >
                 Voltar

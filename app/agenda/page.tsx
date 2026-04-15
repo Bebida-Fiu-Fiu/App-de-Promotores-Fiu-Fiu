@@ -3,8 +3,10 @@ import { redirect } from 'next/navigation';
 
 import { AppTabs } from '@/components/home/app-tabs';
 import { Header } from '@/components/home/header';
+import { WeeklyVehicleCheckGate } from '@/components/home/weekly-vehicle-check-gate';
 import { getSession } from '@/lib/auth';
 import { pool } from '@/lib/db';
+import { getWeeklyVehicleCheckDateContext, hasWeeklyVehicleCheckForWeek } from '@/lib/weekly-vehicle-check';
 
 const weekdayOrder = ['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo'] as const;
 
@@ -96,9 +98,11 @@ export default async function AgendaPage({
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const query = resolvedSearchParams.q?.trim() ?? '';
   const selectedDay = resolvedSearchParams.day?.trim().toLowerCase() ?? '';
+  const shouldShowWeeklyVehicleCheck = session.role === 'promotor';
 
   let fullName: string | null = null;
   let agendaEntries: AgendaEntry[] = [];
+  let hasCompletedWeeklyVehicleCheck = false;
 
   try {
     const client = await pool.connect();
@@ -122,7 +126,7 @@ export default async function AgendaPage({
       const whereClause = `WHERE ${filters.join(' AND ')}`;
 
       const [userResult, agendaResult] = await Promise.all([
-        client.query('SELECT full_name FROM promotors WHERE email = $1', [session.email]),
+        client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
         client.query(
           `SELECT
              a.id,
@@ -168,6 +172,7 @@ export default async function AgendaPage({
       ]);
 
       fullName = userResult.rows[0]?.full_name ?? null;
+      const promotorId = Number(userResult.rows[0]?.id ?? 0);
       agendaEntries = agendaResult.rows.map((row) => ({
         id: Number(row.id),
         weekday: row.weekday,
@@ -179,6 +184,15 @@ export default async function AgendaPage({
         clientName: row.client_name ?? '',
         lastVisitDate: row.last_visit_date ?? null,
       }));
+
+      if (shouldShowWeeklyVehicleCheck && promotorId) {
+        const { weekStartDateKey, weekEndDateKey } = getWeeklyVehicleCheckDateContext();
+        hasCompletedWeeklyVehicleCheck = await hasWeeklyVehicleCheckForWeek(
+          promotorId,
+          weekStartDateKey,
+          weekEndDateKey
+        );
+      }
     } finally {
       client.release();
     }
@@ -188,10 +202,10 @@ export default async function AgendaPage({
 
   const groups = buildAgendaGroups(agendaEntries);
 
-  return (
+  const content = (
     <main className="min-h-screen bg-[var(--background)] px-4 pt-15">
       <Header fullName={fullName} />
-      <AppTabs current="agenda" />
+      <AppTabs current="agenda" role={session.role} />
 
       <section className="mx-auto w-full max-w-4xl px-6 pt-8">
         <div className="flex items-start justify-between gap-4">
@@ -288,5 +302,17 @@ export default async function AgendaPage({
         </div>
       </section>
     </main>
+  );
+
+  if (!shouldShowWeeklyVehicleCheck) {
+    return content;
+  }
+
+  return (
+    <WeeklyVehicleCheckGate
+      initialCompletedForToday={hasCompletedWeeklyVehicleCheck}
+    >
+      {content}
+    </WeeklyVehicleCheckGate>
   );
 }

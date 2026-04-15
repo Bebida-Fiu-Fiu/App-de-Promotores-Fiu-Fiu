@@ -4,7 +4,8 @@ import { revalidatePath } from 'next/cache';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { pool } from '@/lib/db';
-import { clearSession, createSession, getSession } from '@/lib/auth';
+import { clearSession, createSession, getHomePath, getSession } from '@/lib/auth';
+import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -14,6 +15,7 @@ const loginSchema = z.object({
 const signupSchema = loginSchema.extend({
   fullName: z.string().min(3),
   confirmPassword: z.string().min(6),
+  role: z.enum(['promotor', 'comercial']),
 }).refine((data) => data.password === data.confirmPassword, {
   message: 'Passwords do not match',
   path: ['confirmPassword'],
@@ -86,6 +88,38 @@ const agendaEntrySchema = z.object({
   frequency: z.string().trim().optional().default(''),
   notes: z.string().trim().optional().default(''),
   isPlanned: z.boolean().optional().default(false),
+});
+
+const weeklyVehicleCheckSchema = z.object({
+  mileage: z.coerce.number().int().min(0),
+});
+
+const commercialSubmissionSchema = z.object({
+  clientName: z.string().trim().min(1, 'Informe o cliente.'),
+  fantasyName: z.string().trim().min(1, 'Informe a fantasia.'),
+  cnpj: z
+    .string()
+    .trim()
+    .refine((value) => !value || normalizeDigits(value).length === 14, 'Informe um CNPJ valido.'),
+  email: z
+    .string()
+    .trim()
+    .refine((value) => !value || z.email().safeParse(value).success, 'Informe um email valido.'),
+  phone: z.string().trim().min(1, 'Informe o telefone.'),
+  address: z.string().trim().min(1, 'Informe o endereco.'),
+  value: z.coerce.number({ message: 'Informe o valor.' }).min(0, 'Informe um valor valido.'),
+  salesQuantity: z.coerce
+    .number({ message: 'Informe a quantidade de vendas.' })
+    .int('Informe um numero inteiro.')
+    .min(0, 'Informe uma quantidade valida.'),
+  sold: z.boolean(),
+  visitDates: z
+    .array(z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/, 'Informe uma data de visita valida.'))
+    .min(1, 'Informe pelo menos uma data de visita.'),
+});
+
+const commercialSubmissionUpdateSchema = commercialSubmissionSchema.extend({
+  submissionId: z.coerce.number().int().positive(),
 });
 
 function parseDisplayDateToDatabase(value: string) {
@@ -197,13 +231,15 @@ export async function login(data: z.infer<typeof loginSchema>) {
       if (!passwordMatches) {
         return { success: false, error: 'Invalid credentials' };
       }
+
+      const role = user.role === 'comercial' ? 'comercial' : 'promotor';
+
+      await createSession(email, role);
+
+      return { success: true, homePath: getHomePath(role) };
     } finally {
       client.release();
     }
-
-    await createSession(email);
-
-    return { success: true };
   } catch (error) {
     console.error('Login error:', error);
     return { success: false, error: 'Database connection failed' };
@@ -217,7 +253,7 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
     return { success: false, error: 'Invalid data' };
   }
 
-  const { email, fullName, password } = validation.data;
+  const { email, fullName, password, role } = validation.data;
 
   try {
     const client = await pool.connect();
@@ -232,16 +268,16 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
       const hashedPassword = await bcrypt.hash(password, 12);
 
       await client.query(
-        'INSERT INTO promotors (full_name, email, password) VALUES ($1, $2, $3)',
-        [fullName, email, hashedPassword]
+        'INSERT INTO promotors (full_name, email, password, role) VALUES ($1, $2, $3, $4)',
+        [fullName, email, hashedPassword, role]
       );
     } finally {
       client.release();
     }
 
-    await createSession(email);
+    await createSession(email, role);
 
-    return { success: true };
+    return { success: true, homePath: getHomePath(role) };
   } catch (error) {
     console.error('Signup error:', error);
     return { success: false, error: 'Could not create account' };
@@ -250,6 +286,12 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
 
 export async function logout() {
   await clearSession();
+}
+
+export async function getSessionHomePath() {
+  const session = await getSession();
+
+  return getHomePath(session?.role);
 }
 
 export async function searchClients(
@@ -703,5 +745,244 @@ export async function deleteVisitDraft(visitId: number) {
   } catch (error) {
     console.error('Delete visit draft error:', error);
     return { success: false, error: 'Nao foi possivel excluir o rascunho.' };
+  }
+}
+
+export async function createCommercialSubmission(
+  data: z.infer<typeof commercialSubmissionSchema>
+) {
+  const session = await getSession();
+
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const validation = commercialSubmissionSchema.safeParse(data);
+
+  if (!validation.success) {
+    const firstIssue = validation.error.issues[0];
+    return { success: false, error: firstIssue?.message ?? 'Preencha os campos obrigatorios.' };
+  }
+
+  const {
+    clientName,
+    fantasyName,
+    cnpj,
+    email,
+    phone,
+    address,
+    value,
+    salesQuantity,
+    sold,
+    visitDates,
+  } = validation.data;
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      const result = await client.query(
+        `INSERT INTO commercial_submissions (
+           client_name,
+           fantasy_name,
+           cnpj,
+           email,
+           phone,
+           address,
+           total_value,
+           sales_quantity,
+           sold,
+           visit_dates,
+           submitted_by_email
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+         RETURNING id`,
+        [
+          clientName,
+          fantasyName,
+          cnpj ? normalizeDigits(cnpj) : null,
+          email || null,
+          phone,
+          address,
+          value,
+          salesQuantity,
+          sold,
+          JSON.stringify(visitDates),
+          session.email,
+        ]
+      );
+
+      const submissionId = Number(result.rows[0]?.id ?? 0);
+
+      revalidatePath('/comercial');
+
+      return { success: true, submissionId };
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error('Create commercial submission error:', error);
+    return { success: false, error: 'Nao foi possivel salvar o formulario do comercial.' };
+  }
+}
+
+export async function updateCommercialSubmission(
+  data: z.infer<typeof commercialSubmissionUpdateSchema>
+) {
+  const session = await getSession();
+
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const validation = commercialSubmissionUpdateSchema.safeParse(data);
+
+  if (!validation.success) {
+    const firstIssue = validation.error.issues[0];
+    return { success: false, error: firstIssue?.message ?? 'Preencha os campos obrigatorios.' };
+  }
+
+  const {
+    submissionId,
+    clientName,
+    fantasyName,
+    cnpj,
+    email,
+    phone,
+    address,
+    value,
+    salesQuantity,
+    sold,
+    visitDates,
+  } = validation.data;
+
+  try {
+    const client = await pool.connect();
+
+    try {
+      const existingSubmission = await client.query(
+        'SELECT id FROM commercial_submissions WHERE id = $1',
+        [submissionId]
+      );
+
+      if (!existingSubmission.rowCount) {
+        return { success: false, error: 'Cliente do comercial nao encontrado.' };
+      }
+
+      await client.query(
+        `UPDATE commercial_submissions
+         SET client_name = $1,
+             fantasy_name = $2,
+             cnpj = $3,
+             email = $4,
+             phone = $5,
+             address = $6,
+             total_value = $7,
+             sales_quantity = $8,
+             sold = $9,
+             visit_dates = $10::jsonb
+         WHERE id = $11`,
+        [
+          clientName,
+          fantasyName,
+          cnpj ? normalizeDigits(cnpj) : null,
+          email || null,
+          phone,
+          address,
+          value,
+          salesQuantity,
+          sold,
+          JSON.stringify(visitDates),
+          submissionId,
+        ]
+      );
+    } finally {
+      client.release();
+    }
+
+    revalidatePath('/comercial');
+    revalidatePath(`/comercial/${submissionId}`);
+    revalidatePath(`/comercial/${submissionId}/editar`);
+
+    return { success: true, submissionId };
+  } catch (error) {
+    console.error('Update commercial submission error:', error);
+    return { success: false, error: 'Nao foi possivel atualizar o cliente do comercial.' };
+  }
+}
+
+export async function saveWeeklyVehicleCheck(formData: FormData) {
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const validation = weeklyVehicleCheckSchema.safeParse({
+    mileage: formData.get('mileage'),
+  });
+
+  if (!validation.success) {
+    return { success: false, error: 'Informe uma quilometragem valida.' };
+  }
+
+  const image = formData.get('image');
+
+  if (!(image instanceof File) || image.size === 0) {
+    return { success: false, error: 'Tire uma foto antes de confirmar.' };
+  }
+
+  if (!image.type.startsWith('image/')) {
+    return { success: false, error: 'Envie um arquivo de imagem valido.' };
+  }
+
+  const maxImageSizeInBytes = 8 * 1024 * 1024;
+
+  if (image.size > maxImageSizeInBytes) {
+    return { success: false, error: 'A imagem deve ter no maximo 8 MB.' };
+  }
+
+  const { dateKey } = getWeeklyVehicleCheckDateContext();
+
+  try {
+    const imageBuffer = Buffer.from(await image.arrayBuffer());
+    const client = await pool.connect();
+
+    try {
+      await client.query(
+        `INSERT INTO vehicle_mileage_checks (
+           promotor_id,
+           check_date,
+           mileage,
+           image_data,
+           image_mime_type,
+           image_name
+         ) VALUES ($1, $2::date, $3, $4, $5, $6)
+         ON CONFLICT (promotor_id, check_date)
+         DO UPDATE SET
+           mileage = EXCLUDED.mileage,
+           image_data = EXCLUDED.image_data,
+           image_mime_type = EXCLUDED.image_mime_type,
+           image_name = EXCLUDED.image_name,
+           updated_at = NOW()`,
+        [
+          promotorId,
+          dateKey,
+          validation.data.mileage,
+          imageBuffer,
+          image.type,
+          image.name || null,
+        ]
+      );
+    } finally {
+      client.release();
+    }
+
+    revalidatePath('/');
+    revalidatePath('/agenda');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Save weekly vehicle check error:', error);
+    return { success: false, error: 'Nao foi possivel salvar a quilometragem.' };
   }
 }
