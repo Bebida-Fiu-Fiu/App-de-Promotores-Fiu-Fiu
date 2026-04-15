@@ -147,14 +147,15 @@ const commercialSubmissionFormSchema = z.object({
     .min(1, 'Informe pelo menos uma data de visita.'),
 });
 
-type CommercialSubmissionFormData = z.infer<typeof commercialSubmissionFormSchema>;
+type CommercialSubmissionFormInput = z.input<typeof commercialSubmissionFormSchema>;
+type CommercialSubmissionFormData = z.output<typeof commercialSubmissionFormSchema>;
 
 type CommercialFormMode = 'create' | 'edit';
 
 type CommercialSubmissionFormProps = {
   mode?: CommercialFormMode;
   submissionId?: number;
-  initialValues?: Partial<CommercialSubmissionFormData>;
+  initialValues?: Partial<CommercialSubmissionFormInput>;
 };
 
 const inputClassName =
@@ -199,7 +200,7 @@ export function CommercialSubmissionForm({
     setValue,
     control,
     formState: { errors, isSubmitting },
-  } = useForm<CommercialSubmissionFormData>({
+  } = useForm<CommercialSubmissionFormInput, unknown, CommercialSubmissionFormData>({
     resolver: zodResolver(commercialSubmissionFormSchema),
     defaultValues: {
       clientName: initialValues?.clientName ?? '',
@@ -516,8 +517,7 @@ export function CommercialSubmissionForm({
               <p className="mt-3 text-sm text-red-200">{errors.visitDates.root.message}</p>
             )}
 
-            {errors.visitDates &&
-              !errors.visitDates.root &&
+            {Array.isArray(errors.visitDates) &&
               errors.visitDates.map((error, index) => {
                 if (!error?.value?.message) {
                   return null;
