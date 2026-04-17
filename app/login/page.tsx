@@ -14,6 +14,7 @@ export default async function LoginPage() {
     <main
       className="flex min-h-screen items-center justify-center bg-[var(--background)] p-4"
       style={{
+        backgroundColor: '#0c2432',
         backgroundImage: "url('/Texture/Dots.svg')",
         backgroundSize: 'cover',
         backgroundRepeat: 'no-repeat',
