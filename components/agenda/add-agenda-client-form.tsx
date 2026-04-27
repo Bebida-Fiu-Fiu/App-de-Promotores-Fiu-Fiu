@@ -6,16 +6,6 @@ import { useRouter } from 'next/navigation';
 
 import { createAgendaEntry, searchClients } from '@/lib/actions';
 
-const weekdayOptions = [
-  { value: 'segunda', label: 'Segunda' },
-  { value: 'terca', label: 'Terca' },
-  { value: 'quarta', label: 'Quarta' },
-  { value: 'quinta', label: 'Quinta' },
-  { value: 'sexta', label: 'Sexta' },
-  { value: 'sabado', label: 'Sabado' },
-  { value: 'domingo', label: 'Domingo' },
-] as const;
-
 type ClientSearchFilters = {
   clientName: string;
   fantasyName: string;
@@ -57,7 +47,7 @@ function hasAtLeastOneSearchFilter(filters: ClientSearchFilters) {
   return Object.values(filters).some((value) => value.trim().length > 0);
 }
 
-export function AddAgendaClientForm({ defaultWeekday }: { defaultWeekday: string }) {
+export function AddAgendaClientForm() {
   const router = useRouter();
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
     clientName: '',
@@ -72,10 +62,7 @@ export function AddAgendaClientForm({ defaultWeekday }: { defaultWeekday: string
   const [searchResults, setSearchResults] = useState<ClientSearchResult[]>([]);
   const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(null);
   const [nickname, setNickname] = useState('');
-  const [weekday, setWeekday] = useState(defaultWeekday);
-  const [frequency, setFrequency] = useState('');
   const [notes, setNotes] = useState('');
-  const [isPlanned, setIsPlanned] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -135,10 +122,7 @@ export function AddAgendaClientForm({ defaultWeekday }: { defaultWeekday: string
     setSearchResults([]);
     setSelectedClient(null);
     setNickname('');
-    setWeekday(defaultWeekday);
-    setFrequency('');
     setNotes('');
-    setIsPlanned(false);
   };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -151,20 +135,12 @@ export function AddAgendaClientForm({ defaultWeekday }: { defaultWeekday: string
       return;
     }
 
-    if (!weekday) {
-      setErrorMessage('Preencha o campo obrigatório "Dia da semana".');
-      return;
-    }
-
     setIsSaving(true);
 
     const result = await createAgendaEntry({
       clientId: selectedClient.id,
-      weekday: weekday as (typeof weekdayOptions)[number]['value'],
       nickname,
-      frequency,
       notes,
-      isPlanned,
     });
 
     startTransition(() => {
@@ -366,35 +342,6 @@ export function AddAgendaClientForm({ defaultWeekday }: { defaultWeekday: string
 
         <div className="space-y-1">
           <label className="block text-sm font-medium text-white">
-            Dia da semana
-            <RequiredAsterisk />
-          </label>
-          <select
-            value={weekday}
-            onChange={(event) => setWeekday(event.target.value)}
-            className="h-10 w-full rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white outline-none"
-          >
-            {weekdayOptions.map((option) => (
-              <option key={option.value} value={option.value} className="bg-[#0c2432] text-white">
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        <div className="space-y-1">
-          <label className="block text-sm font-medium text-white">Frequencia</label>
-          <input
-            type="text"
-            value={frequency}
-            placeholder="Ex.: Quinzenal"
-            className="h-10 w-full rounded-md border border-[#707070] bg-white/10 px-3 text-sm text-white outline-none placeholder:text-white/45"
-            onChange={(event) => setFrequency(event.target.value)}
-          />
-        </div>
-
-        <div className="space-y-1">
-          <label className="block text-sm font-medium text-white">
             Observacao
             <span className="ml-2 text-xs font-normal text-white/55">(Opcional)</span>
           </label>
@@ -407,16 +354,6 @@ export function AddAgendaClientForm({ defaultWeekday }: { defaultWeekday: string
           />
         </div>
       </div>
-
-      <label className="mt-4 flex items-center gap-2 rounded-md border border-white/10 bg-black/10 px-3 py-3 text-sm text-white">
-        <input
-          type="checkbox"
-          checked={isPlanned}
-          onChange={(event) => setIsPlanned(event.target.checked)}
-          className="h-4 w-4 accent-[#009c6c]"
-        />
-        Marcar como visita programada
-      </label>
 
       {errorMessage && (
         <p className="mt-4 rounded-md border border-[#ffb3b3]/30 bg-[#5c1f1f]/45 px-3 py-2 text-sm text-[#ffe2e2]">

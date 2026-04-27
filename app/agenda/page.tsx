@@ -8,24 +8,20 @@ import { getSession } from '@/lib/auth';
 import { pool } from '@/lib/db';
 import { getWeeklyVehicleCheckDateContext, hasWeeklyVehicleCheckForWeek } from '@/lib/weekly-vehicle-check';
 
-const weekdayOrder = ['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo'] as const;
-
 type AgendaEntry = {
   id: number;
-  weekday: string;
   nickname: string | null;
-  frequency: string | null;
   notes: string | null;
-  isPlanned: boolean;
+  clientId: number;
   fantasyName: string;
   clientName: string;
+  document: string;
+  city: string;
+  address: string;
+  addressNumber: string | null;
+  neighborhood: string;
+  state: string;
   lastVisitDate: string | null;
-};
-
-type AgendaGroup = {
-  weekday: string;
-  regularEntries: AgendaEntry[];
-  plannedEntries: AgendaEntry[];
 };
 
 function formatPromotorTitle(fullName: string | null) {
@@ -36,19 +32,44 @@ function formatPromotorTitle(fullName: string | null) {
   return fullName.split(' ')[0]?.toUpperCase() ?? 'PROMOTOR';
 }
 
-function formatWeekdayLabel(value: string) {
-  return value.toUpperCase();
+function formatEntryTitle(entry: AgendaEntry) {
+  return entry.nickname || entry.fantasyName || entry.clientName;
 }
 
-function formatEntryLabel(entry: AgendaEntry) {
-  const label = entry.nickname || entry.fantasyName || entry.clientName;
-  const meta = [entry.frequency, entry.notes].filter(Boolean).join(' • ');
+function formatEntrySubtitle(entry: AgendaEntry) {
+  const title = formatEntryTitle(entry);
+  const parts = [
+    entry.clientName && entry.clientName !== title ? entry.clientName : null,
+    entry.notes,
+  ].filter(Boolean);
 
-  if (!meta) {
-    return label;
+  return parts.join(' • ');
+}
+
+function formatEntryAddress(entry: AgendaEntry) {
+  return [entry.address, entry.addressNumber, entry.neighborhood, entry.city, entry.state]
+    .filter(Boolean)
+    .join(', ');
+}
+
+function buildVisitRegistrationHref(entry: AgendaEntry) {
+  const params = new URLSearchParams({
+    clientId: String(entry.clientId),
+    nickname: entry.nickname ?? '',
+    clientName: entry.clientName,
+    fantasyName: entry.fantasyName,
+    document: entry.document,
+    city: entry.city,
+    address: entry.address,
+    neighborhood: entry.neighborhood,
+    state: entry.state,
+  });
+
+  if (entry.addressNumber) {
+    params.set('addressNumber', entry.addressNumber);
   }
 
-  return `${label} (${meta})`;
+  return `/visitas/nova?${params.toString()}`;
 }
 
 function formatLastVisitDate(value: string | null) {
@@ -59,35 +80,40 @@ function formatLastVisitDate(value: string | null) {
   return new Date(value).toLocaleDateString('pt-BR', { timeZone: 'UTC' });
 }
 
-function buildAgendaGroups(entries: AgendaEntry[]) {
-  const groups = new Map<string, AgendaGroup>();
+function AgendaEntryCard({ entry }: { entry: AgendaEntry }) {
+  const subtitle = formatEntrySubtitle(entry);
+  const address = formatEntryAddress(entry);
 
-  for (const entry of entries) {
-    const current = groups.get(entry.weekday);
+  return (
+    <article className="rounded-2xl border border-white/10 bg-white/5 p-4 shadow-[0_12px_30px_rgba(0,0,0,0.08)]">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-2">
+          <div>
+            <h4 className="text-base font-bold text-white">{formatEntryTitle(entry)}</h4>
+            {subtitle ? <p className="mt-1 text-sm text-white/70">{subtitle}</p> : null}
+          </div>
 
-    if (!current) {
-      groups.set(entry.weekday, {
-        weekday: entry.weekday,
-        regularEntries: entry.isPlanned ? [] : [entry],
-        plannedEntries: entry.isPlanned ? [entry] : [],
-      });
-      continue;
-    }
+          <div className="space-y-1 text-sm text-white/75">
+            <p>Ultima visita: {formatLastVisitDate(entry.lastVisitDate)}</p>
+            {address ? <p>{address}</p> : null}
+          </div>
+        </div>
 
-    if (entry.isPlanned) {
-      current.plannedEntries.push(entry);
-    } else {
-      current.regularEntries.push(entry);
-    }
-  }
-
-  return Array.from(groups.values());
+        <Link
+          href={buildVisitRegistrationHref(entry)}
+          className="inline-flex min-h-10 items-center justify-center rounded-xl bg-[#009c6c] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#009c6c]/80"
+        >
+          Registrar visita
+        </Link>
+      </div>
+    </article>
+  );
 }
 
 export default async function AgendaPage({
   searchParams,
 }: {
-  searchParams?: Promise<{ q?: string; day?: string }>;
+  searchParams?: Promise<{ q?: string }>;
 }) {
   const session = await getSession();
 
@@ -97,7 +123,6 @@ export default async function AgendaPage({
 
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const query = resolvedSearchParams.q?.trim() ?? '';
-  const selectedDay = resolvedSearchParams.day?.trim().toLowerCase() ?? '';
   const shouldShowWeeklyVehicleCheck = session.role === 'promotor';
 
   let fullName: string | null = null;
@@ -111,15 +136,10 @@ export default async function AgendaPage({
       const values: string[] = [session.email];
       const filters: string[] = ['p.email = $1'];
 
-      if (selectedDay) {
-        values.push(selectedDay);
-        filters.push(`LOWER(a.weekday) = $${values.length}`);
-      }
-
       if (query) {
         values.push(`%${query}%`);
         filters.push(
-          `(c.fantasy_name ILIKE $${values.length} OR c.client_name ILIKE $${values.length} OR a.nickname ILIKE $${values.length})`
+          `(c.fantasy_name ILIKE $${values.length} OR c.client_name ILIKE $${values.length} OR a.nickname ILIKE $${values.length} OR a.notes ILIKE $${values.length})`
         );
       }
 
@@ -130,13 +150,17 @@ export default async function AgendaPage({
         client.query(
           `SELECT
              a.id,
-             a.weekday,
              a.nickname,
-             a.frequency,
              a.notes,
-             a.is_planned,
+             c.id AS client_id,
              c.fantasy_name,
              c.client_name,
+             c.document,
+             c.city,
+             c.address,
+             c.address_number,
+             c.neighborhood,
+             c.state,
              latest_visit.visit_date AS last_visit_date
            FROM promotor_client_agenda a
            INNER JOIN promotors p ON p.id = a.promotor_id
@@ -146,7 +170,8 @@ export default async function AgendaPage({
              FROM visits v
              WHERE v.promotor_id = p.id
                AND (
-                 v.establishment = c.fantasy_name
+                 v.establishment = coalesce(a.nickname, '')
+                 OR v.establishment = c.fantasy_name
                  OR v.establishment = c.client_name
                )
              ORDER BY v.visit_date DESC, v.id DESC
@@ -154,19 +179,8 @@ export default async function AgendaPage({
            ) latest_visit ON TRUE
            ${whereClause}
            ORDER BY
-             CASE LOWER(a.weekday)
-               WHEN 'segunda' THEN 1
-               WHEN 'terca' THEN 2
-               WHEN 'quarta' THEN 3
-               WHEN 'quinta' THEN 4
-               WHEN 'sexta' THEN 5
-               WHEN 'sabado' THEN 6
-               WHEN 'domingo' THEN 7
-               ELSE 99
-             END,
-             a.is_planned ASC,
-             c.fantasy_name ASC,
-             c.client_name ASC`,
+             coalesce(nullif(a.nickname, ''), nullif(c.fantasy_name, ''), c.client_name) ASC,
+             a.created_at DESC`,
           values
         ),
       ]);
@@ -175,13 +189,17 @@ export default async function AgendaPage({
       const promotorId = Number(userResult.rows[0]?.id ?? 0);
       agendaEntries = agendaResult.rows.map((row) => ({
         id: Number(row.id),
-        weekday: row.weekday,
         nickname: row.nickname ?? null,
-        frequency: row.frequency,
         notes: row.notes,
-        isPlanned: row.is_planned,
+        clientId: Number(row.client_id),
         fantasyName: row.fantasy_name ?? '',
         clientName: row.client_name ?? '',
+        document: row.document ?? '',
+        city: row.city ?? '',
+        address: row.address ?? '',
+        addressNumber: row.address_number ?? null,
+        neighborhood: row.neighborhood ?? '',
+        state: row.state ?? '',
         lastVisitDate: row.last_visit_date ?? null,
       }));
 
@@ -199,8 +217,6 @@ export default async function AgendaPage({
   } catch (error) {
     console.error('Agenda lookup error:', error);
   }
-
-  const groups = buildAgendaGroups(agendaEntries);
 
   const content = (
     <main className="min-h-screen bg-[var(--background)] px-4 pt-15">
@@ -226,26 +242,14 @@ export default async function AgendaPage({
           </Link>
         </div>
 
-        <form className="mt-6 grid gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 sm:grid-cols-[minmax(0,1fr)_180px_auto]">
+        <form className="mt-6 grid gap-3 rounded-2xl border border-white/10 bg-white/5 p-4 sm:grid-cols-[minmax(0,1fr)_auto]">
           <input
             type="text"
             name="q"
             defaultValue={query}
-            placeholder="Filtrar por cliente"
+            placeholder="Filtrar por apelido, cliente ou observacao"
             className="h-10 rounded-md border border-[#707070] bg-white/10 px-3 text-sm text-white outline-none placeholder:text-white/45"
           />
-          <select
-            name="day"
-            defaultValue={selectedDay}
-            className="h-10 rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white outline-none"
-          >
-            <option value="">Todos os dias</option>
-            {weekdayOrder.map((day) => (
-              <option key={day} value={day} className="bg-[#0c2432] text-white">
-                {formatWeekdayLabel(day)}
-              </option>
-            ))}
-          </select>
           <button
             type="submit"
             className="rounded-md border border-white/20 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/15"
@@ -254,50 +258,13 @@ export default async function AgendaPage({
           </button>
         </form>
 
-        <div className="mt-6 space-y-5">
-          {groups.length === 0 ? (
+        <div className="mt-6 space-y-3">
+          {agendaEntries.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/75">
-              Nenhum cliente encontrado para os filtros atuais. Se a agenda ainda nao foi cadastrada no banco,
-              execute a migration e adicione os itens na tabela `promotor_client_agenda`.
+              Nenhum cliente encontrado para os filtros atuais.
             </div>
           ) : (
-            groups.map((group) => (
-              <article
-                key={group.weekday}
-                className="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
-              >
-                <h3 className="text-lg font-bold text-white">{formatWeekdayLabel(group.weekday)}</h3>
-
-                {group.regularEntries.length > 0 && (
-                  <ul className="mt-4 space-y-2 text-sm text-white/85">
-                    {group.regularEntries.map((entry) => (
-                      <li key={entry.id}>
-                        • {formatEntryLabel(entry)}
-                        <span className="ml-2 text-white/55">
-                          Ultima visita: {formatLastVisitDate(entry.lastVisitDate)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                {group.plannedEntries.length > 0 && (
-                  <div className="mt-4">
-                    <p className="text-sm font-semibold text-white/75">Visitas programadas</p>
-                    <ul className="mt-2 space-y-2 text-sm text-white/85">
-                      {group.plannedEntries.map((entry) => (
-                        <li key={entry.id}>
-                          • {formatEntryLabel(entry)}
-                          <span className="ml-2 text-white/55">
-                            Ultima visita: {formatLastVisitDate(entry.lastVisitDate)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </article>
-            ))
+            agendaEntries.map((entry) => <AgendaEntryCard key={entry.id} entry={entry} />)
           )}
         </div>
       </section>
@@ -311,6 +278,7 @@ export default async function AgendaPage({
   return (
     <WeeklyVehicleCheckGate
       initialCompletedForToday={hasCompletedWeeklyVehicleCheck}
+      allowSkip
     >
       {content}
     </WeeklyVehicleCheckGate>

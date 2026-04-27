@@ -5,19 +5,6 @@ import { redirect } from 'next/navigation';
 import { AddAgendaClientForm } from '@/components/agenda/add-agenda-client-form';
 import { getSession } from '@/lib/auth';
 
-function getDefaultWeekday() {
-  const formattedWeekday = new Intl.DateTimeFormat('pt-BR', {
-    weekday: 'long',
-    timeZone: 'America/Sao_Paulo',
-  }).format(new Date());
-
-  return formattedWeekday
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace('-feira', '');
-}
-
 export default async function NewAgendaClientPage() {
   const session = await getSession();
 
@@ -39,11 +26,11 @@ export default async function NewAgendaClientPage() {
         <div className="mt-6">
           <h1 className="text-2xl font-bold text-white">Adicionar cliente na agenda</h1>
           <p className="mt-2 text-sm text-white/70">
-            Selecione o cliente na base de dados e escolha o dia em que ele deve aparecer.
+            Selecione o cliente na base de dados e defina apelido e observacao, se precisar.
           </p>
         </div>
 
-        <AddAgendaClientForm defaultWeekday={getDefaultWeekday()} />
+        <AddAgendaClientForm />
       </section>
     </main>
   );

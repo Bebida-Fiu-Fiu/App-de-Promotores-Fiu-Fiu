@@ -1,11 +1,18 @@
 'use client';
 
-import { Building2, CalendarDays, ChevronDown, Search, Trash2 } from 'lucide-react';
-import { startTransition, useEffect, useRef, useState } from 'react';
+import { Building2, CalendarDays, ChevronDown, ImageIcon, Search, Sparkles, Trash2 } from 'lucide-react';
+import NextImage from 'next/image';
+import { startTransition, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 
-import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
+import {
+  createVisit,
+  extractVisitDataWithAI,
+  getSessionHomePath,
+  saveVisitDraft,
+  searchClients,
+} from '@/lib/actions';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 
 const productSuggestions = [
@@ -38,6 +45,8 @@ const packageOptions = ['unidade', 'pack', 'caixa'] as const;
 type VisitFormValues = {
   establishment: string;
   date: string;
+  beforeImage: string;
+  afterImage: string;
   products: {
     name: string;
     quantity: number;
@@ -59,6 +68,7 @@ type ClientSearchFilters = {
 
 type ClientSearchResult = {
   id: number;
+  nickname?: string;
   client_name: string;
   fantasy_name: string;
   document: string;
@@ -68,6 +78,8 @@ type ClientSearchResult = {
   neighborhood: string;
   state: string;
 };
+
+type InitialClientData = ClientSearchResult;
 
 function formatDateToDisplay(value: string) {
   if (!value) {
@@ -81,6 +93,160 @@ function formatDateToDisplay(value: string) {
   }
 
   return `${day}/${month}/${year}`;
+}
+
+async function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(new Error('Nao foi possivel ler a imagem.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressImageFile(file: File) {
+  const dataUrl = await readFileAsDataUrl(file);
+
+  return new Promise<string>((resolve, reject) => {
+    const image = new window.Image();
+
+    image.onload = () => {
+      const maxDimension = 1280;
+      const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+      const width = Math.max(1, Math.round(image.width * scale));
+      const height = Math.max(1, Math.round(image.height * scale));
+      const canvas = document.createElement('canvas');
+
+      canvas.width = width;
+      canvas.height = height;
+
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        resolve(dataUrl);
+        return;
+      }
+
+      context.drawImage(image, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', 0.82));
+    };
+
+    image.onerror = () => reject(new Error('Nao foi possivel processar a imagem.'));
+    image.src = dataUrl;
+  });
+}
+
+function VisitImageField({
+  inputId,
+  label,
+  value,
+  onChange,
+}: {
+  inputId: string;
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+
+  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    if (!file.type.startsWith('image/')) {
+      setFieldError('Selecione um arquivo de imagem valido.');
+      event.target.value = '';
+      return;
+    }
+
+    setFieldError(null);
+    setIsProcessing(true);
+
+    try {
+      const compressedImage = await compressImageFile(file);
+      onChange(compressedImage);
+    } catch {
+      setFieldError('Nao foi possivel carregar essa imagem.');
+    } finally {
+      setIsProcessing(false);
+      event.target.value = '';
+    }
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <ImageIcon size={16} />
+        <label htmlFor={inputId} className="block text-sm font-medium">
+          {label}
+        </label>
+      </div>
+
+      <input
+        ref={inputRef}
+        id={inputId}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={(event) => {
+          void handleFileChange(event);
+        }}
+      />
+
+      {value ? (
+        <div className="overflow-hidden rounded-xl border border-[#707070] bg-black/15">
+          <NextImage
+            src={value}
+            alt={`Preview ${label.toLowerCase()}`}
+            width={800}
+            height={500}
+            unoptimized
+            className="h-44 w-full object-cover"
+          />
+          <div className="flex items-center justify-between gap-2 border-t border-white/10 p-3">
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={isProcessing}
+              className="rounded-md border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isProcessing ? 'Processando...' : 'Trocar imagem'}
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange('')}
+              className="rounded-md border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 py-1.5 text-xs font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+            >
+              Remover
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={isProcessing}
+          className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[#707070] bg-white/5 px-4 text-center transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          <ImageIcon size={24} className="text-white/70" />
+          <div>
+            <p className="text-sm font-semibold text-white">
+              {isProcessing ? 'Processando imagem...' : `Adicionar imagem ${label.toLowerCase()}`}
+            </p>
+            <p className="mt-1 text-xs text-white/65">Toque para selecionar e ver o preview</p>
+          </div>
+        </button>
+      )}
+
+      {fieldError && <p className="text-xs text-[#ffd6d6]">{fieldError}</p>}
+    </div>
+  );
 }
 
 function ProductExpirationDateField({
@@ -212,7 +378,7 @@ function ProductSelectField({
 }
 
 function buildEstablishmentLabel(client: ClientSearchResult) {
-  return client.fantasy_name || client.client_name;
+  return client.nickname || client.fantasy_name || client.client_name;
 }
 
 function buildClientSubtitle(client: ClientSearchResult) {
@@ -283,12 +449,14 @@ type NewVisitFormProps = {
   visitId?: number;
   isDraft?: boolean;
   initialData?: Partial<VisitFormValues>;
+  initialClient?: InitialClientData | null;
 };
 
 export function NewVisitForm({
   visitId,
   isDraft = false,
   initialData,
+  initialClient = null,
 }: NewVisitFormProps) {
   const router = useRouter();
   const visitDatePickerRef = useRef<HTMLInputElement | null>(null);
@@ -296,22 +464,24 @@ export function NewVisitForm({
   const [modalMode, setModalMode] = useState<'success' | 'error' | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
-    clientName: '',
-    fantasyName: '',
-    document: '',
-    city: '',
-    address: '',
-    addressNumber: '',
-    neighborhood: '',
-    state: '',
+    clientName: initialClient?.nickname ?? initialClient?.client_name ?? '',
+    fantasyName: initialClient?.fantasy_name ?? '',
+    document: initialClient?.document ?? '',
+    city: initialClient?.city ?? '',
+    address: initialClient?.address ?? '',
+    addressNumber: initialClient?.address_number ?? '',
+    neighborhood: initialClient?.neighborhood ?? '',
+    state: initialClient?.state ?? '',
   });
   const [searchResults, setSearchResults] = useState<ClientSearchResult[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(null);
+  const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(initialClient);
   const [isSearching, setIsSearching] = useState(false);
   const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
   const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
   const [homePath, setHomePath] = useState('/promotor');
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [isGeneratingWithAI, setIsGeneratingWithAI] = useState(false);
 
   const {
     register,
@@ -325,6 +495,8 @@ export function NewVisitForm({
     defaultValues: {
       establishment: initialData?.establishment ?? '',
       date: initialData?.date ?? formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      beforeImage: initialData?.beforeImage ?? '',
+      afterImage: initialData?.afterImage ?? '',
       products: initialData?.products?.length
         ? initialData.products
         : [
@@ -345,6 +517,14 @@ export function NewVisitForm({
   const watchedEstablishment = useWatch({
     control,
     name: 'establishment',
+  }) ?? '';
+  const watchedBeforeImage = useWatch({
+    control,
+    name: 'beforeImage',
+  }) ?? '';
+  const watchedAfterImage = useWatch({
+    control,
+    name: 'afterImage',
   }) ?? '';
   const watchedProducts = useWatch({
     control,
@@ -449,6 +629,8 @@ export function NewVisitForm({
     reset({
       establishment: '',
       date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      beforeImage: '',
+      afterImage: '',
       products: [
         {
           name: '',
@@ -462,6 +644,16 @@ export function NewVisitForm({
     setSelectedClient(null);
     setSearchResults([]);
     setSearchError(null);
+    setSearchFilters({
+      clientName: '',
+      fantasyName: '',
+      document: '',
+      city: '',
+      address: '',
+      addressNumber: '',
+      neighborhood: '',
+      state: '',
+    });
     setModalMode('success');
     setModalMessage(visitId ? 'Visita atualizada com sucesso.' : 'Visita cadastrada com sucesso.');
   };
@@ -484,6 +676,51 @@ export function NewVisitForm({
     }
 
     router.refresh();
+  };
+
+  const handleFillWithAI = async () => {
+    if (!aiPrompt.trim()) {
+      setFormError('Descreva a visita para a IA preencher o formulario.');
+      return;
+    }
+
+    setFormError(null);
+    setIsGeneratingWithAI(true);
+
+    const result = await extractVisitDataWithAI({ prompt: aiPrompt });
+
+    startTransition(() => {
+      setIsGeneratingWithAI(false);
+
+      if (!result.success || !result.data) {
+        setFormError(result.error ?? 'Nao foi possivel preencher a visita com IA.');
+        return;
+      }
+
+      setSelectedClient(null);
+      setSearchResults([]);
+      setSearchError(null);
+
+      setValue('establishment', result.data.establishment, {
+        shouldDirty: true,
+        shouldTouch: true,
+        shouldValidate: true,
+      });
+
+      if (result.data.date) {
+        setValue('date', result.data.date, {
+          shouldDirty: true,
+          shouldTouch: true,
+          shouldValidate: true,
+        });
+      }
+
+      setValue('products', result.data.products, {
+        shouldDirty: true,
+        shouldTouch: true,
+        shouldValidate: true,
+      });
+    });
   };
 
   return (
@@ -530,6 +767,38 @@ export function NewVisitForm({
         className="w-full max-w-xs rounded-[1.25rem] border border-[#5b5b5b] bg-white/10 px-3 py-6 text-[#ffffff] shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
       >
         <div className="space-y-3">
+          <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
+            <div className="flex items-center gap-2">
+              <Sparkles size={16} />
+              <label className="block text-sm font-medium">Preencher com IA</label>
+            </div>
+
+            <p className="text-xs text-white/75">
+              Descreva a visita em texto livre para a IA sugerir estabelecimento, data e produtos.
+            </p>
+
+            <textarea
+              value={aiPrompt}
+              onChange={(event) => {
+                setFormError(null);
+                setAiPrompt(event.target.value);
+              }}
+              rows={5}
+              placeholder="Ex.: Visitei o Mercadinho Sao Jose hoje. Encontrei 10 Cajazinhas em unidade e 4 caixas de ICE Chicletin com validade 10/05/2026."
+              className="w-full rounded-md border border-[#707070] bg-white/20 px-3 py-2 text-sm text-white outline-none placeholder:text-white/45"
+            />
+
+            <button
+              type="button"
+              onClick={() => void handleFillWithAI()}
+              disabled={isGeneratingWithAI}
+              className="flex h-9 items-center justify-center gap-2 rounded-md border border-[#009c6c]/60 bg-[#009c6c]/20 px-4 text-sm font-medium text-white transition hover:bg-[#009c6c]/30 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <Sparkles size={14} />
+              {isGeneratingWithAI ? 'Preenchendo...' : 'Preencher formulario com IA'}
+            </button>
+          </div>
+
           <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
             <div className="flex items-center gap-2">
               <Building2 size={16} />
@@ -791,6 +1060,41 @@ export function NewVisitForm({
                   setValue('date', formatDateToDisplay(event.target.value), {
                     shouldDirty: true,
                     shouldTouch: true,
+                  });
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
+            <input type="hidden" {...register('beforeImage')} />
+            <input type="hidden" {...register('afterImage')} />
+
+            <div className="grid grid-cols-1 gap-3">
+              <VisitImageField
+                inputId="visit-before-image"
+                label="Imagem antes"
+                value={watchedBeforeImage}
+                onChange={(value) => {
+                  setFormError(null);
+                  setValue('beforeImage', value, {
+                    shouldDirty: true,
+                    shouldTouch: true,
+                    shouldValidate: true,
+                  });
+                }}
+              />
+
+              <VisitImageField
+                inputId="visit-after-image"
+                label="Imagem depois"
+                value={watchedAfterImage}
+                onChange={(value) => {
+                  setFormError(null);
+                  setValue('afterImage', value, {
+                    shouldDirty: true,
+                    shouldTouch: true,
+                    shouldValidate: true,
                   });
                 }}
               />
