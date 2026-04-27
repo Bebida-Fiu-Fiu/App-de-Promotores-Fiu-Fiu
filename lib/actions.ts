@@ -55,6 +55,8 @@ const visitSchema = z.object({
   establishment: z.string().min(1),
   date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
   products: z.array(visitProductSchema).min(1),
+  beforeImage: z.string().trim().optional().default(''),
+  afterImage: z.string().trim().optional().default(''),
 });
 
 const visitDraftSchema = z.object({
@@ -68,6 +70,25 @@ const visitDraftSchema = z.object({
       expirationDate: z.string().trim().optional().default(''),
     })
   ).optional().default([]),
+  beforeImage: z.string().trim().optional().default(''),
+  afterImage: z.string().trim().optional().default(''),
+});
+
+const aiVisitProductSchema = z.object({
+  name: z.string().trim().optional().default(''),
+  quantity: z.coerce.number().min(0).optional().default(0),
+  packageType: z.enum(['unidade', 'pack', 'caixa']).optional().default('unidade'),
+  expirationDate: z.string().trim().optional().default(''),
+});
+
+const aiVisitExtractionSchema = z.object({
+  prompt: z.string().trim().min(1, 'Descreva a visita para a IA.'),
+});
+
+const aiVisitExtractionResultSchema = z.object({
+  establishment: z.string().trim().optional().default(''),
+  date: z.string().trim().optional().default(''),
+  products: z.array(aiVisitProductSchema).optional().default([]),
 });
 
 const clientSearchSchema = z.object({
@@ -83,11 +104,8 @@ const clientSearchSchema = z.object({
 
 const agendaEntrySchema = z.object({
   clientId: z.coerce.number().int().positive(),
-  weekday: z.enum(['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo']),
   nickname: z.string().trim().optional().default(''),
-  frequency: z.string().trim().optional().default(''),
   notes: z.string().trim().optional().default(''),
-  isPlanned: z.boolean().optional().default(false),
 });
 
 const weeklyVehicleCheckSchema = z.object({
@@ -181,6 +199,103 @@ function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['prod
     }));
 }
 
+function getTodayInSaoPaulo() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Sao_Paulo',
+  }).format(new Date());
+}
+
+function normalizeAiDateToDisplay(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) {
+    return '';
+  }
+
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmedValue)) {
+    return trimmedValue;
+  }
+
+  const isoMatch = trimmedValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+
+  if (isoMatch) {
+    return `${isoMatch[3]}/${isoMatch[2]}/${isoMatch[1]}`;
+  }
+
+  return '';
+}
+
+function normalizeAiExpirationDate(name: string, quantity: number, value: string) {
+  if (productHasIndefiniteExpiration(name) || quantity <= 0) {
+    return '';
+  }
+
+  return normalizeAiDateToDisplay(value);
+}
+
+function normalizeAiProducts(products: z.infer<typeof aiVisitExtractionResultSchema>['products']) {
+  const normalizedProducts = products
+    .map((product) => {
+      const name = product.name.trim();
+      const quantity = Number(product.quantity) || 0;
+
+      return {
+        name,
+        quantity,
+        packageType: product.packageType,
+        expirationDate: normalizeAiExpirationDate(name, quantity, product.expirationDate),
+      };
+    })
+    .filter((product) => product.name || product.quantity > 0 || product.expirationDate);
+
+  return normalizedProducts.length > 0
+    ? normalizedProducts
+    : [
+        {
+          name: '',
+          quantity: 0,
+          packageType: 'unidade' as const,
+          expirationDate: '',
+        },
+      ];
+}
+
+function getOpenAIVisitExtractionErrorMessage(errorPayload: unknown) {
+  if (
+    !errorPayload ||
+    typeof errorPayload !== 'object' ||
+    !('error' in errorPayload) ||
+    !errorPayload.error ||
+    typeof errorPayload.error !== 'object'
+  ) {
+    return 'Nao foi possivel interpretar a visita com a OpenAI.';
+  }
+
+  const apiError = errorPayload.error as {
+    code?: string | null;
+    type?: string | null;
+    message?: string | null;
+  };
+
+  if (apiError.code === 'insufficient_quota' || apiError.type === 'insufficient_quota') {
+    return 'Sua conta da OpenAI esta sem cota ou credito disponivel. Verifique o plano e o faturamento antes de usar o preenchimento com IA.';
+  }
+
+  if (apiError.code === 'invalid_api_key') {
+    return 'A chave da OpenAI configurada no projeto e invalida.';
+  }
+
+  if (apiError.code === 'model_not_found') {
+    return 'O modelo configurado para preencher visitas nao foi encontrado. Revise OPENAI_VISIT_MODEL.';
+  }
+
+  if (typeof apiError.message === 'string' && apiError.message.trim()) {
+    return apiError.message.trim();
+  }
+
+  return 'Nao foi possivel interpretar a visita com a OpenAI.';
+}
+
 function isVisitEditable(createdAt: string | Date, isDraft: boolean) {
   if (isDraft) {
     return true;
@@ -190,6 +305,20 @@ function isVisitEditable(createdAt: string | Date, isDraft: boolean) {
   const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
 
   return Date.now() - createdAtDate.getTime() <= sevenDaysInMs;
+}
+
+function isMissingVisitImageColumnError(error: unknown) {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+
+  const databaseError = error as { code?: string; message?: string };
+
+  return (
+    databaseError.code === '42703' &&
+    typeof databaseError.message === 'string' &&
+    (databaseError.message.includes('before_image') || databaseError.message.includes('after_image'))
+  );
 }
 
 export async function login(data: z.infer<typeof loginSchema>) {
@@ -479,7 +608,6 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
   if (!validation.success) {
     const fieldLabels: Record<string, string> = {
       clientId: 'Buscar cliente na base',
-      weekday: 'Dia da semana',
     };
 
     const firstIssue = validation.error.issues[0];
@@ -495,7 +623,7 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
     };
   }
 
-  const { clientId, weekday, nickname, frequency, notes, isPlanned } = validation.data;
+  const { clientId, nickname, notes } = validation.data;
 
   try {
     const client = await pool.connect();
@@ -507,24 +635,27 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
         return { success: false, error: 'Cliente nao encontrado na base.' };
       }
 
+      const existingAgendaEntry = await client.query(
+        'SELECT 1 FROM promotor_client_agenda WHERE promotor_id = $1 AND client_id = $2 LIMIT 1',
+        [promotorId, clientId]
+      );
+
+      if (existingAgendaEntry.rowCount) {
+        return { success: false, error: 'Esse cliente ja esta na agenda.' };
+      }
+
       await client.query(
         `INSERT INTO promotor_client_agenda (
            promotor_id,
            client_id,
-           weekday,
            nickname,
-           frequency,
-           notes,
-           is_planned
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+           notes
+         ) VALUES ($1, $2, $3, $4)`,
         [
           promotorId,
           clientId,
-          weekday,
           nickname || null,
-          frequency || null,
           notes || null,
-          isPlanned,
         ]
       );
     } finally {
@@ -599,16 +730,41 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
            SET establishment = $1,
                visit_date = $2,
                products = $3::jsonb,
+               before_image = $4,
+               after_image = $5,
                is_draft = FALSE,
                updated_at = NOW()
-           WHERE id = $4 AND promotor_id = $5`,
-          [validation.data.establishment, visitDate, JSON.stringify(products), visitId, promotorId]
+           WHERE id = $6 AND promotor_id = $7`,
+          [
+            validation.data.establishment,
+            visitDate,
+            JSON.stringify(products),
+            validation.data.beforeImage || null,
+            validation.data.afterImage || null,
+            visitId,
+            promotorId,
+          ]
         );
       } else {
         await client.query(
-          `INSERT INTO visits (promotor_id, establishment, visit_date, products, is_draft)
-           VALUES ($1, $2, $3, $4::jsonb, FALSE)`,
-          [promotorId, validation.data.establishment, visitDate, JSON.stringify(products)]
+          `INSERT INTO visits (
+             promotor_id,
+             establishment,
+             visit_date,
+             products,
+             before_image,
+             after_image,
+             is_draft
+           )
+           VALUES ($1, $2, $3, $4::jsonb, $5, $6, FALSE)`,
+          [
+            promotorId,
+            validation.data.establishment,
+            visitDate,
+            JSON.stringify(products),
+            validation.data.beforeImage || null,
+            validation.data.afterImage || null,
+          ]
         );
       }
     } finally {
@@ -625,7 +781,148 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
     return { success: true };
   } catch (error) {
     console.error('Create visit error:', error);
+    if (isMissingVisitImageColumnError(error)) {
+      return {
+        success: false,
+        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel salvar a visita.' };
+  }
+}
+
+export async function extractVisitDataWithAI(
+  data: z.infer<typeof aiVisitExtractionSchema>
+) {
+  const validation = aiVisitExtractionSchema.safeParse(data);
+
+  if (!validation.success) {
+    return { success: false, error: 'Descreva a visita para a IA antes de continuar.' };
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+
+  if (!apiKey) {
+    return {
+      success: false,
+      error: 'Configure OPENAI_API_KEY para usar o preenchimento com IA.',
+    };
+  }
+
+  const model = process.env.OPENAI_VISIT_MODEL || 'gpt-5-mini';
+  const today = getTodayInSaoPaulo();
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        reasoning: {
+          effort: 'low',
+        },
+        input: [
+          {
+            role: 'system',
+            content: [
+              {
+                type: 'input_text',
+                text:
+                  'Extraia dados de visitas de promotores e devolva somente campos estruturados para preencher um formulario. Nao invente dados ausentes. Se um campo nao aparecer claramente, devolva vazio. Use datas no formato DD/MM/AAAA. Para produtos com validade indeterminada (Cajazinha, Abacaxi Cortela, Tangerina c/ Acerola, Pomar), deixe expirationDate vazio. Se a unidade nao estiver clara, use unidade. So use pack ou caixa quando isso estiver explicito.',
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'input_text',
+                text: `Data atual em Sao Paulo: ${today}. Converta a descricao abaixo em dados do formulario de visita.\n\n${validation.data.prompt}`,
+              },
+            ],
+          },
+        ],
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'visit_extraction',
+            strict: true,
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                establishment: { type: 'string' },
+                date: { type: 'string' },
+                products: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      name: { type: 'string' },
+                      quantity: { type: 'number' },
+                      packageType: {
+                        type: 'string',
+                        enum: ['unidade', 'pack', 'caixa'],
+                      },
+                      expirationDate: { type: 'string' },
+                    },
+                    required: ['name', 'quantity', 'packageType', 'expirationDate'],
+                  },
+                },
+              },
+              required: ['establishment', 'date', 'products'],
+            },
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('OpenAI visit extraction error:', errorText);
+
+      let parsedError: unknown = null;
+
+      try {
+        parsedError = JSON.parse(errorText);
+      } catch {
+        parsedError = null;
+      }
+
+      return {
+        success: false,
+        error: getOpenAIVisitExtractionErrorMessage(parsedError),
+      };
+    }
+
+    const payload = await response.json();
+    const outputText = payload.output_text;
+
+    if (typeof outputText !== 'string' || !outputText.trim()) {
+      return { success: false, error: 'A OpenAI nao retornou dados validos para a visita.' };
+    }
+
+    const parsedResult = aiVisitExtractionResultSchema.safeParse(JSON.parse(outputText));
+
+    if (!parsedResult.success) {
+      return { success: false, error: 'A OpenAI retornou um formato invalido para a visita.' };
+    }
+
+    return {
+      success: true,
+      data: {
+        establishment: parsedResult.data.establishment,
+        date: normalizeAiDateToDisplay(parsedResult.data.date),
+        products: normalizeAiProducts(parsedResult.data.products),
+      },
+    };
+  } catch (error) {
+    console.error('Extract visit with AI error:', error);
+    return { success: false, error: 'Nao foi possivel preencher a visita com IA.' };
   }
 }
 
@@ -670,10 +967,20 @@ export async function saveVisitDraft(
            SET establishment = $1,
                visit_date = $2,
                products = $3::jsonb,
+               before_image = $4,
+               after_image = $5,
                is_draft = TRUE,
                updated_at = NOW()
-           WHERE id = $4 AND promotor_id = $5`,
-          [establishment, visitDate, JSON.stringify(draftProducts), visitId, promotorId]
+           WHERE id = $6 AND promotor_id = $7`,
+          [
+            establishment,
+            visitDate,
+            JSON.stringify(draftProducts),
+            validation.data.beforeImage || null,
+            validation.data.afterImage || null,
+            visitId,
+            promotorId,
+          ]
         );
 
         revalidatePath('/');
@@ -684,10 +991,25 @@ export async function saveVisitDraft(
       }
 
       const result = await client.query(
-        `INSERT INTO visits (promotor_id, establishment, visit_date, products, is_draft)
-         VALUES ($1, $2, $3, $4::jsonb, TRUE)
+        `INSERT INTO visits (
+           promotor_id,
+           establishment,
+           visit_date,
+           products,
+           before_image,
+           after_image,
+           is_draft
+         )
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, TRUE)
          RETURNING id`,
-        [promotorId, establishment, visitDate, JSON.stringify(draftProducts)]
+        [
+          promotorId,
+          establishment,
+          visitDate,
+          JSON.stringify(draftProducts),
+          validation.data.beforeImage || null,
+          validation.data.afterImage || null,
+        ]
       );
 
       const createdVisitId = Number(result.rows[0]?.id);
@@ -703,6 +1025,12 @@ export async function saveVisitDraft(
     }
   } catch (error) {
     console.error('Save visit draft error:', error);
+    if (isMissingVisitImageColumnError(error)) {
+      return {
+        success: false,
+        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 }
@@ -910,7 +1238,10 @@ export async function updateCommercialSubmission(
   }
 }
 
-export async function saveWeeklyVehicleCheck(formData: FormData) {
+export async function saveWeeklyVehicleCheck(
+  formData: FormData,
+  options?: { allowWithoutPhoto?: boolean }
+) {
   const promotorId = await getCurrentPromotorId();
 
   if (!promotorId) {
@@ -926,25 +1257,34 @@ export async function saveWeeklyVehicleCheck(formData: FormData) {
   }
 
   const image = formData.get('image');
+  const allowWithoutPhoto = Boolean(options?.allowWithoutPhoto);
 
-  if (!(image instanceof File) || image.size === 0) {
+  if (!allowWithoutPhoto && (!(image instanceof File) || image.size === 0)) {
     return { success: false, error: 'Tire uma foto antes de confirmar.' };
   }
 
-  if (!image.type.startsWith('image/')) {
+  if (image instanceof File && image.size > 0 && !image.type.startsWith('image/')) {
     return { success: false, error: 'Envie um arquivo de imagem valido.' };
   }
 
   const maxImageSizeInBytes = 8 * 1024 * 1024;
 
-  if (image.size > maxImageSizeInBytes) {
+  if (image instanceof File && image.size > maxImageSizeInBytes) {
     return { success: false, error: 'A imagem deve ter no maximo 8 MB.' };
   }
 
   const { dateKey } = getWeeklyVehicleCheckDateContext();
 
   try {
-    const imageBuffer = Buffer.from(await image.arrayBuffer());
+    const placeholderBase64 =
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
+    const fallbackImageBuffer = Buffer.from(placeholderBase64, 'base64');
+    const hasImage = image instanceof File && image.size > 0;
+    const imageBuffer = hasImage
+      ? Buffer.from(await image.arrayBuffer())
+      : fallbackImageBuffer;
+    const imageMimeType = hasImage ? image.type : 'image/jpeg';
+    const imageName = hasImage ? image.name || null : 'teste-sem-foto.jpg';
     const client = await pool.connect();
 
     try {
@@ -969,8 +1309,8 @@ export async function saveWeeklyVehicleCheck(formData: FormData) {
           dateKey,
           validation.data.mileage,
           imageBuffer,
-          image.type,
-          image.name || null,
+          imageMimeType,
+          imageName,
         ]
       );
     } finally {
@@ -984,5 +1324,53 @@ export async function saveWeeklyVehicleCheck(formData: FormData) {
   } catch (error) {
     console.error('Save weekly vehicle check error:', error);
     return { success: false, error: 'Nao foi possivel salvar a quilometragem.' };
+  }
+}
+
+export async function skipWeeklyVehicleCheck() {
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const { dateKey } = getWeeklyVehicleCheckDateContext();
+
+  try {
+    const placeholderBase64 =
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
+    const imageBuffer = Buffer.from(placeholderBase64, 'base64');
+    const client = await pool.connect();
+
+    try {
+      await client.query(
+        `INSERT INTO vehicle_mileage_checks (
+           promotor_id,
+           check_date,
+           mileage,
+           image_data,
+           image_mime_type,
+           image_name
+         ) VALUES ($1, $2::date, $3, $4, $5, $6)
+         ON CONFLICT (promotor_id, check_date)
+         DO UPDATE SET
+           mileage = EXCLUDED.mileage,
+           image_data = EXCLUDED.image_data,
+           image_mime_type = EXCLUDED.image_mime_type,
+           image_name = EXCLUDED.image_name,
+           updated_at = NOW()`,
+        [promotorId, dateKey, 0, imageBuffer, 'image/jpeg', 'quilometragem-pulada.jpg']
+      );
+    } finally {
+      client.release();
+    }
+
+    revalidatePath('/');
+    revalidatePath('/agenda');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Skip weekly vehicle check error:', error);
+    return { success: false, error: 'Nao foi possivel registrar o pulo da quilometragem.' };
   }
 }

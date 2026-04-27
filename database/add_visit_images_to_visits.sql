@@ -1,0 +1,5 @@
+ALTER TABLE visits
+ADD COLUMN IF NOT EXISTS before_image TEXT;
+
+ALTER TABLE visits
+ADD COLUMN IF NOT EXISTS after_image TEXT;

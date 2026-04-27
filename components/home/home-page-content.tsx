@@ -101,6 +101,7 @@ export async function HomePageContent({ email, role }: HomePageContentProps) {
   return (
     <WeeklyVehicleCheckGate
       initialCompletedForToday={hasCompletedWeeklyVehicleCheck}
+      allowSkip
     >
       {content}
     </WeeklyVehicleCheckGate>

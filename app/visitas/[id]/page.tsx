@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
@@ -46,6 +47,8 @@ export default async function VisitDetailsPage({
         establishment: string;
         visitDate: string;
         products: VisitProduct[];
+        beforeImage: string;
+        afterImage: string;
         isDraft: boolean;
         canEdit: boolean;
       }
@@ -57,7 +60,7 @@ export default async function VisitDetailsPage({
       const [userResult, visitResult] = await Promise.all([
         client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
         client.query(
-          `SELECT v.establishment, v.visit_date, v.products, v.is_draft, v.created_at
+          `SELECT v.establishment, v.visit_date, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
            FROM visits v
            INNER JOIN promotors p ON p.id = v.promotor_id
            WHERE v.id = $1 AND p.email = $2`,
@@ -73,6 +76,8 @@ export default async function VisitDetailsPage({
           establishment: row.establishment ?? 'Rascunho sem estabelecimento',
           visitDate: formatDatabaseDateToDisplay(row.visit_date),
           products: Array.isArray(row.products) ? row.products : [],
+          beforeImage: row.before_image ?? '',
+          afterImage: row.after_image ?? '',
           isDraft: Boolean(row.is_draft),
           canEdit:
             Boolean(row.is_draft) ||
@@ -140,6 +145,42 @@ export default async function VisitDetailsPage({
         </div>
 
         <div className="mt-6">
+          {(visit.beforeImage || visit.afterImage) && (
+            <div className="mb-6 grid gap-4 sm:grid-cols-2">
+              {visit.beforeImage && (
+                <article className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-4 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
+                    Antes
+                  </p>
+                  <Image
+                    src={visit.beforeImage}
+                    alt="Imagem de antes da visita"
+                    width={1200}
+                    height={900}
+                    unoptimized
+                    className="mt-3 h-64 w-full rounded-[18px] object-cover"
+                  />
+                </article>
+              )}
+
+              {visit.afterImage && (
+                <article className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-4 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
+                    Depois
+                  </p>
+                  <Image
+                    src={visit.afterImage}
+                    alt="Imagem de depois da visita"
+                    width={1200}
+                    height={900}
+                    unoptimized
+                    className="mt-3 h-64 w-full rounded-[18px] object-cover"
+                  />
+                </article>
+              )}
+            </div>
+          )}
+
           {visit.products.length === 0 ? (
             <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-7 text-sm text-white/75 shadow-[0_16px_35px_rgba(0,0,0,0.16)]">
               Nenhum produto registrado nesta visita.

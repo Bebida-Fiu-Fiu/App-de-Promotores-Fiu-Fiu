@@ -8,15 +8,19 @@ import {
   useRef,
   useState,
 } from 'react'; 
-import { saveWeeklyVehicleCheck } from '@/lib/actions';
+import { saveWeeklyVehicleCheck, skipWeeklyVehicleCheck } from '@/lib/actions';
 
 type WeeklyVehicleCheckGateProps = {
   initialCompletedForToday?: boolean;
+  requirePhoto?: boolean;
+  allowSkip?: boolean;
   children: ReactNode;
 };
-
+ 
 export function WeeklyVehicleCheckGate({
   initialCompletedForToday = false,
+  requirePhoto = true,
+  allowSkip = false,
   children,
 }: WeeklyVehicleCheckGateProps) {
   const previewUrlRef = useRef<string | null>(null);
@@ -159,7 +163,7 @@ export function WeeklyVehicleCheckGate({
       return;
     }
 
-    if (!selectedImage) {
+    if (requirePhoto && !selectedImage) {
       setErrorMessage('Tire uma foto do painel antes de continuar.');
       return;
     }
@@ -169,14 +173,34 @@ export function WeeklyVehicleCheckGate({
 
     const formData = new FormData();
     formData.append('mileage', mileage.trim());
-    formData.append('image', selectedImage);
+    if (selectedImage) {
+      formData.append('image', selectedImage);
+    }
 
-    const result = await saveWeeklyVehicleCheck(formData);
+    const result = await saveWeeklyVehicleCheck(formData, {
+      allowWithoutPhoto: !requirePhoto,
+    });
 
     setIsSaving(false);
 
     if (!result.success) {
       setErrorMessage(result.error ?? 'Nao foi possivel salvar a quilometragem.');
+      return;
+    }
+
+    setIsConfirmedLocally(true);
+  };
+
+  const handleSkip = async () => {
+    setIsSaving(true);
+    setErrorMessage(null);
+
+    const result = await skipWeeklyVehicleCheck();
+
+    setIsSaving(false);
+
+    if (!result.success) {
+      setErrorMessage(result.error ?? 'Nao foi possivel registrar o pulo da quilometragem.');
       return;
     }
 
@@ -243,6 +267,12 @@ export function WeeklyVehicleCheckGate({
                   {isCameraOpen ? 'Tirar foto' : 'Camera'}
                 </button>
 
+                {!requirePhoto && !selectedImage && (
+                  <p className="max-w-[16rem] text-center text-xs font-medium text-white/70">
+                    Visao de teste: a foto pode ser pulada nesta tela.
+                  </p>
+                )}
+
                 <button
                   type="button"
                   onClick={() => void handleConfirm()}
@@ -252,6 +282,17 @@ export function WeeklyVehicleCheckGate({
                   <CheckCircle2 size={18} />
                   {isSaving ? 'Salvando...' : 'Confirmar e continuar'}
                 </button>
+
+                {allowSkip && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSkip()}
+                    disabled={isSaving}
+                    className="inline-flex items-center rounded-full border border-white/20 bg-white/10 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/20"
+                  >
+                    Pular quilometragem
+                  </button>
+                )}
               </div>
 
               {errorMessage && (
