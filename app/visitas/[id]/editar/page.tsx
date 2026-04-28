@@ -52,6 +52,8 @@ export default async function EditVisitPage({
         establishment: string;
         date: string;
         products: EditableVisitProduct[];
+        beforeImage: string;
+        afterImage: string;
         isDraft: boolean;
         canEdit: boolean;
       }
@@ -61,7 +63,7 @@ export default async function EditVisitPage({
     const client = await pool.connect();
     try {
       const result = await client.query(
-        `SELECT v.establishment, v.visit_date, v.products, v.is_draft, v.created_at
+        `SELECT v.establishment, v.visit_date, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
          FROM visits v
          INNER JOIN promotors p ON p.id = v.promotor_id
          WHERE v.id = $1 AND p.email = $2`,
@@ -77,6 +79,8 @@ export default async function EditVisitPage({
         visit = {
           establishment: row.establishment ?? '',
           date: formatDatabaseDateToDisplay(row.visit_date),
+          beforeImage: row.before_image ?? '',
+          afterImage: row.after_image ?? '',
           products: Array.isArray(row.products) && row.products.length > 0
             ? (row.products as StoredVisitProduct[]).map((product) => ({
                 name: product.name ?? '',
@@ -130,6 +134,8 @@ export default async function EditVisitPage({
           establishment: visit.establishment,
           date: visit.date,
           products: visit.products,
+          beforeImage: visit.beforeImage,
+          afterImage: visit.afterImage,
         }}
       />
     </main>

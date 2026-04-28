@@ -55,6 +55,8 @@ const visitSchema = z.object({
   establishment: z.string().min(1),
   date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
   products: z.array(visitProductSchema).min(1),
+  beforeImage: z.string().trim().optional().default(''),
+  afterImage: z.string().trim().optional().default(''),
 });
 
 const visitDraftSchema = z.object({
@@ -102,11 +104,8 @@ const clientSearchSchema = z.object({
 
 const agendaEntrySchema = z.object({
   clientId: z.coerce.number().int().positive(),
-  weekday: z.enum(['segunda', 'terca', 'quarta', 'quinta', 'sexta', 'sabado', 'domingo']),
   nickname: z.string().trim().optional().default(''),
-  frequency: z.string().trim().optional().default(''),
   notes: z.string().trim().optional().default(''),
-  isPlanned: z.boolean().optional().default(false),
 });
 
 const weeklyVehicleCheckSchema = z.object({
@@ -306,6 +305,20 @@ function isVisitEditable(createdAt: string | Date, isDraft: boolean) {
   const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
 
   return Date.now() - createdAtDate.getTime() <= sevenDaysInMs;
+}
+
+function isMissingVisitImageColumnError(error: unknown) {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return false;
+  }
+
+  const databaseError = error as { code?: string; message?: string };
+
+  return (
+    databaseError.code === '42703' &&
+    typeof databaseError.message === 'string' &&
+    (databaseError.message.includes('before_image') || databaseError.message.includes('after_image'))
+  );
 }
 
 export async function login(data: z.infer<typeof loginSchema>) {
@@ -595,7 +608,6 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
   if (!validation.success) {
     const fieldLabels: Record<string, string> = {
       clientId: 'Buscar cliente na base',
-      weekday: 'Dia da semana',
     };
 
     const firstIssue = validation.error.issues[0];
@@ -611,7 +623,7 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
     };
   }
 
-  const { clientId, weekday, nickname, frequency, notes, isPlanned } = validation.data;
+  const { clientId, nickname, notes } = validation.data;
 
   try {
     const client = await pool.connect();
@@ -623,24 +635,27 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
         return { success: false, error: 'Cliente nao encontrado na base.' };
       }
 
+      const existingAgendaEntry = await client.query(
+        'SELECT 1 FROM promotor_client_agenda WHERE promotor_id = $1 AND client_id = $2 LIMIT 1',
+        [promotorId, clientId]
+      );
+
+      if (existingAgendaEntry.rowCount) {
+        return { success: false, error: 'Esse cliente ja esta na agenda.' };
+      }
+
       await client.query(
         `INSERT INTO promotor_client_agenda (
            promotor_id,
            client_id,
-           weekday,
            nickname,
-           frequency,
-           notes,
-           is_planned
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+           notes
+         ) VALUES ($1, $2, $3, $4)`,
         [
           promotorId,
           clientId,
-          weekday,
           nickname || null,
-          frequency || null,
           notes || null,
-          isPlanned,
         ]
       );
     } finally {
@@ -715,16 +730,41 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
            SET establishment = $1,
                visit_date = $2,
                products = $3::jsonb,
+               before_image = $4,
+               after_image = $5,
                is_draft = FALSE,
                updated_at = NOW()
-           WHERE id = $4 AND promotor_id = $5`,
-          [validation.data.establishment, visitDate, JSON.stringify(products), visitId, promotorId]
+           WHERE id = $6 AND promotor_id = $7`,
+          [
+            validation.data.establishment,
+            visitDate,
+            JSON.stringify(products),
+            validation.data.beforeImage || null,
+            validation.data.afterImage || null,
+            visitId,
+            promotorId,
+          ]
         );
       } else {
         await client.query(
-          `INSERT INTO visits (promotor_id, establishment, visit_date, products, is_draft)
-           VALUES ($1, $2, $3, $4::jsonb, FALSE)`,
-          [promotorId, validation.data.establishment, visitDate, JSON.stringify(products)]
+          `INSERT INTO visits (
+             promotor_id,
+             establishment,
+             visit_date,
+             products,
+             before_image,
+             after_image,
+             is_draft
+           )
+           VALUES ($1, $2, $3, $4::jsonb, $5, $6, FALSE)`,
+          [
+            promotorId,
+            validation.data.establishment,
+            visitDate,
+            JSON.stringify(products),
+            validation.data.beforeImage || null,
+            validation.data.afterImage || null,
+          ]
         );
       }
     } finally {
@@ -741,6 +781,12 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
     return { success: true };
   } catch (error) {
     console.error('Create visit error:', error);
+    if (isMissingVisitImageColumnError(error)) {
+      return {
+        success: false,
+        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel salvar a visita.' };
   }
 }
@@ -921,10 +967,20 @@ export async function saveVisitDraft(
            SET establishment = $1,
                visit_date = $2,
                products = $3::jsonb,
+               before_image = $4,
+               after_image = $5,
                is_draft = TRUE,
                updated_at = NOW()
-           WHERE id = $4 AND promotor_id = $5`,
-          [establishment, visitDate, JSON.stringify(draftProducts), visitId, promotorId]
+           WHERE id = $6 AND promotor_id = $7`,
+          [
+            establishment,
+            visitDate,
+            JSON.stringify(draftProducts),
+            validation.data.beforeImage || null,
+            validation.data.afterImage || null,
+            visitId,
+            promotorId,
+          ]
         );
 
         revalidatePath('/');
@@ -935,10 +991,25 @@ export async function saveVisitDraft(
       }
 
       const result = await client.query(
-        `INSERT INTO visits (promotor_id, establishment, visit_date, products, is_draft)
-         VALUES ($1, $2, $3, $4::jsonb, TRUE)
+        `INSERT INTO visits (
+           promotor_id,
+           establishment,
+           visit_date,
+           products,
+           before_image,
+           after_image,
+           is_draft
+         )
+         VALUES ($1, $2, $3, $4::jsonb, $5, $6, TRUE)
          RETURNING id`,
-        [promotorId, establishment, visitDate, JSON.stringify(draftProducts)]
+        [
+          promotorId,
+          establishment,
+          visitDate,
+          JSON.stringify(draftProducts),
+          validation.data.beforeImage || null,
+          validation.data.afterImage || null,
+        ]
       );
 
       const createdVisitId = Number(result.rows[0]?.id);
@@ -954,6 +1025,12 @@ export async function saveVisitDraft(
     }
   } catch (error) {
     console.error('Save visit draft error:', error);
+    if (isMissingVisitImageColumnError(error)) {
+      return {
+        success: false,
+        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 }
@@ -1161,7 +1238,10 @@ export async function updateCommercialSubmission(
   }
 }
 
-export async function saveWeeklyVehicleCheck(formData: FormData) {
+export async function saveWeeklyVehicleCheck(
+  formData: FormData,
+  options?: { allowWithoutPhoto?: boolean }
+) {
   const promotorId = await getCurrentPromotorId();
 
   if (!promotorId) {
@@ -1177,25 +1257,34 @@ export async function saveWeeklyVehicleCheck(formData: FormData) {
   }
 
   const image = formData.get('image');
+  const allowWithoutPhoto = Boolean(options?.allowWithoutPhoto);
 
-  if (!(image instanceof File) || image.size === 0) {
+  if (!allowWithoutPhoto && (!(image instanceof File) || image.size === 0)) {
     return { success: false, error: 'Tire uma foto antes de confirmar.' };
   }
 
-  if (!image.type.startsWith('image/')) {
+  if (image instanceof File && image.size > 0 && !image.type.startsWith('image/')) {
     return { success: false, error: 'Envie um arquivo de imagem valido.' };
   }
 
   const maxImageSizeInBytes = 8 * 1024 * 1024;
 
-  if (image.size > maxImageSizeInBytes) {
+  if (image instanceof File && image.size > maxImageSizeInBytes) {
     return { success: false, error: 'A imagem deve ter no maximo 8 MB.' };
   }
 
   const { dateKey } = getWeeklyVehicleCheckDateContext();
 
   try {
-    const imageBuffer = Buffer.from(await image.arrayBuffer());
+    const placeholderBase64 =
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
+    const fallbackImageBuffer = Buffer.from(placeholderBase64, 'base64');
+    const hasImage = image instanceof File && image.size > 0;
+    const imageBuffer = hasImage
+      ? Buffer.from(await image.arrayBuffer())
+      : fallbackImageBuffer;
+    const imageMimeType = hasImage ? image.type : 'image/jpeg';
+    const imageName = hasImage ? image.name || null : 'teste-sem-foto.jpg';
     const client = await pool.connect();
 
     try {
@@ -1220,8 +1309,8 @@ export async function saveWeeklyVehicleCheck(formData: FormData) {
           dateKey,
           validation.data.mileage,
           imageBuffer,
-          image.type,
-          image.name || null,
+          imageMimeType,
+          imageName,
         ]
       );
     } finally {
@@ -1235,5 +1324,53 @@ export async function saveWeeklyVehicleCheck(formData: FormData) {
   } catch (error) {
     console.error('Save weekly vehicle check error:', error);
     return { success: false, error: 'Nao foi possivel salvar a quilometragem.' };
+  }
+}
+
+export async function skipWeeklyVehicleCheck() {
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const { dateKey } = getWeeklyVehicleCheckDateContext();
+
+  try {
+    const placeholderBase64 =
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
+    const imageBuffer = Buffer.from(placeholderBase64, 'base64');
+    const client = await pool.connect();
+
+    try {
+      await client.query(
+        `INSERT INTO vehicle_mileage_checks (
+           promotor_id,
+           check_date,
+           mileage,
+           image_data,
+           image_mime_type,
+           image_name
+         ) VALUES ($1, $2::date, $3, $4, $5, $6)
+         ON CONFLICT (promotor_id, check_date)
+         DO UPDATE SET
+           mileage = EXCLUDED.mileage,
+           image_data = EXCLUDED.image_data,
+           image_mime_type = EXCLUDED.image_mime_type,
+           image_name = EXCLUDED.image_name,
+           updated_at = NOW()`,
+        [promotorId, dateKey, 0, imageBuffer, 'image/jpeg', 'quilometragem-pulada.jpg']
+      );
+    } finally {
+      client.release();
+    }
+
+    revalidatePath('/');
+    revalidatePath('/agenda');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Skip weekly vehicle check error:', error);
+    return { success: false, error: 'Nao foi possivel registrar o pulo da quilometragem.' };
   }
 }
