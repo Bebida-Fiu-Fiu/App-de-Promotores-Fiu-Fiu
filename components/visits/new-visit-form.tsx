@@ -38,6 +38,8 @@ const packageOptions = ['unidade', 'pack', 'caixa'] as const;
 type VisitFormValues = {
   establishment: string;
   date: string;
+  beforeImage: string;
+  afterImage: string;
   products: {
     name: string;
     quantity: number;
@@ -47,6 +49,7 @@ type VisitFormValues = {
 };
 
 type ClientSearchFilters = {
+  clientId: string;
   clientName: string;
   fantasyName: string;
   document: string;
@@ -296,6 +299,7 @@ export function NewVisitForm({
   const [modalMode, setModalMode] = useState<'success' | 'error' | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
+    clientId: '',
     clientName: '',
     fantasyName: '',
     document: '',
@@ -325,6 +329,8 @@ export function NewVisitForm({
     defaultValues: {
       establishment: initialData?.establishment ?? '',
       date: initialData?.date ?? formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      beforeImage: initialData?.beforeImage ?? '',
+      afterImage: initialData?.afterImage ?? '',
       products: initialData?.products?.length
         ? initialData.products
         : [
@@ -449,6 +455,8 @@ export function NewVisitForm({
     reset({
       establishment: '',
       date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      beforeImage: '',
+      afterImage: '',
       products: [
         {
           name: '',
@@ -565,6 +573,20 @@ export function NewVisitForm({
                     Geral
                   </button>
                 </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-xs font-medium text-white/80">ID do cliente</label>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={searchFilters.clientId}
+                  placeholder="Ex.: 123"
+                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+                  onChange={(event) =>
+                    handleFilterChange('clientId', event.target.value.replace(/\D/g, ''))
+                  }
+                />
               </div>
 
               <div className="space-y-1">
