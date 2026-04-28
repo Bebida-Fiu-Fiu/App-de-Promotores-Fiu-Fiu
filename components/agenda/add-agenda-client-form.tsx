@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { createAgendaEntry, searchClients } from '@/lib/actions';
 
 type ClientSearchFilters = {
+  clientId: string;
   clientName: string;
   fantasyName: string;
   document: string;
@@ -50,6 +51,7 @@ function hasAtLeastOneSearchFilter(filters: ClientSearchFilters) {
 export function AddAgendaClientForm() {
   const router = useRouter();
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
+    clientId: '',
     clientName: '',
     fantasyName: '',
     document: '',
@@ -110,6 +112,7 @@ export function AddAgendaClientForm() {
 
   const resetForm = () => {
     setSearchFilters({
+      clientId: '',
       clientName: '',
       fantasyName: '',
       document: '',
@@ -180,6 +183,20 @@ export function AddAgendaClientForm() {
         </div>
 
         <div className="mt-3 grid grid-cols-1 gap-3">
+          <div className="space-y-1">
+            <label className="block text-xs font-medium text-white/80">ID do cliente</label>
+            <input
+              type="text"
+              inputMode="numeric"
+              value={searchFilters.clientId}
+              placeholder="Ex.: 123"
+              className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
+              onChange={(event) =>
+                handleFilterChange('clientId', event.target.value.replace(/\D/g, ''))
+              }
+            />
+          </div>
+
           <div className="space-y-1">
             <label className="block text-xs font-medium text-white/80">Nome</label>
             <input
