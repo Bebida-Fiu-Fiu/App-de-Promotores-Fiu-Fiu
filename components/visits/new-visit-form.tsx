@@ -1,6 +1,6 @@
 'use client';
 
-import { Building2, CalendarDays, ChevronDown, ImageIcon, Search, Sparkles, Trash2 } from 'lucide-react';
+import { Building2, CalendarDays, ChevronDown, ImageIcon, Search, Trash2 } from 'lucide-react';
 import NextImage from 'next/image';
 import { startTransition, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useRouter } from 'next/navigation';
@@ -8,7 +8,6 @@ import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 
 import {
   createVisit,
-  extractVisitDataWithAI,
   getSessionHomePath,
   saveVisitDraft,
   searchClients,
@@ -482,8 +481,6 @@ export function NewVisitForm({
   const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
   const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
   const [homePath, setHomePath] = useState('/promotor');
-  const [aiPrompt, setAiPrompt] = useState('');
-  const [isGeneratingWithAI, setIsGeneratingWithAI] = useState(false);
 
   const {
     register,
@@ -647,6 +644,7 @@ export function NewVisitForm({
     setSearchResults([]);
     setSearchError(null);
     setSearchFilters({
+      clientId: '',
       clientName: '',
       fantasyName: '',
       document: '',
@@ -678,51 +676,6 @@ export function NewVisitForm({
     }
 
     router.refresh();
-  };
-
-  const handleFillWithAI = async () => {
-    if (!aiPrompt.trim()) {
-      setFormError('Descreva a visita para a IA preencher o formulario.');
-      return;
-    }
-
-    setFormError(null);
-    setIsGeneratingWithAI(true);
-
-    const result = await extractVisitDataWithAI({ prompt: aiPrompt });
-
-    startTransition(() => {
-      setIsGeneratingWithAI(false);
-
-      if (!result.success || !result.data) {
-        setFormError(result.error ?? 'Nao foi possivel preencher a visita com IA.');
-        return;
-      }
-
-      setSelectedClient(null);
-      setSearchResults([]);
-      setSearchError(null);
-
-      setValue('establishment', result.data.establishment, {
-        shouldDirty: true,
-        shouldTouch: true,
-        shouldValidate: true,
-      });
-
-      if (result.data.date) {
-        setValue('date', result.data.date, {
-          shouldDirty: true,
-          shouldTouch: true,
-          shouldValidate: true,
-        });
-      }
-
-      setValue('products', result.data.products, {
-        shouldDirty: true,
-        shouldTouch: true,
-        shouldValidate: true,
-      });
-    });
   };
 
   return (
@@ -769,38 +722,6 @@ export function NewVisitForm({
         className="w-full max-w-xs rounded-[1.25rem] border border-[#5b5b5b] bg-white/10 px-3 py-6 text-[#ffffff] shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
       >
         <div className="space-y-3">
-          <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
-            <div className="flex items-center gap-2">
-              <Sparkles size={16} />
-              <label className="block text-sm font-medium">Preencher com IA</label>
-            </div>
-
-            <p className="text-xs text-white/75">
-              Descreva a visita em texto livre para a IA sugerir estabelecimento, data e produtos.
-            </p>
-
-            <textarea
-              value={aiPrompt}
-              onChange={(event) => {
-                setFormError(null);
-                setAiPrompt(event.target.value);
-              }}
-              rows={5}
-              placeholder="Ex.: Visitei o Mercadinho Sao Jose hoje. Encontrei 10 Cajazinhas em unidade e 4 caixas de ICE Chicletin com validade 10/05/2026."
-              className="w-full rounded-md border border-[#707070] bg-white/20 px-3 py-2 text-sm text-white outline-none placeholder:text-white/45"
-            />
-
-            <button
-              type="button"
-              onClick={() => void handleFillWithAI()}
-              disabled={isGeneratingWithAI}
-              className="flex h-9 items-center justify-center gap-2 rounded-md border border-[#009c6c]/60 bg-[#009c6c]/20 px-4 text-sm font-medium text-white transition hover:bg-[#009c6c]/30 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              <Sparkles size={14} />
-              {isGeneratingWithAI ? 'Preenchendo...' : 'Preencher formulario com IA'}
-            </button>
-          </div>
-
           <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
             <div className="flex items-center gap-2">
               <Building2 size={16} />
