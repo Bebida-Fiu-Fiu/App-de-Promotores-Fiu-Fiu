@@ -4,7 +4,8 @@ import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { getSession } from '@/lib/auth';
-import { getCommercialSubmissionById, getPromotorFullNameByEmail } from '@/lib/commercial';
+import { listAllCommercialVisits, listCommercialVisitsByComercialId } from '@/lib/api/comercial';
+import { getHeaderFullName } from '@/lib/header-user';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('pt-BR', {
@@ -24,6 +25,8 @@ export default async function CommercialClientPage({
     redirect('/login');
   }
 
+  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
+
   const resolvedParams = await params;
   const submissionId = Number(resolvedParams.id);
 
@@ -31,10 +34,11 @@ export default async function CommercialClientPage({
     notFound();
   }
 
-  const [fullName, submission] = await Promise.all([
-    getPromotorFullNameByEmail(session.email),
-    getCommercialSubmissionById(submissionId),
-  ]);
+  const submissions =
+    typeof session.user.id === 'number'
+      ? await listCommercialVisitsByComercialId(session.accessToken, session.user.id).catch(() => [])
+      : await listAllCommercialVisits(session.accessToken).catch(() => []);
+  const submission = submissions.find((entry) => entry.id === submissionId) ?? null;
 
   if (!submission) {
     notFound();

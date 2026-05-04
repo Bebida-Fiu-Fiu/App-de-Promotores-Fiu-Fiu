@@ -8,12 +8,14 @@ import {
   useRef,
   useState,
 } from 'react'; 
+import { useRouter } from 'next/navigation';
 import { saveWeeklyVehicleCheck, skipWeeklyVehicleCheck } from '@/lib/actions';
 
 type WeeklyVehicleCheckGateProps = {
   initialCompletedForToday?: boolean;
   requirePhoto?: boolean;
   allowSkip?: boolean;
+  redirectTo?: string;
   children: ReactNode;
 };
  
@@ -21,8 +23,10 @@ export function WeeklyVehicleCheckGate({
   initialCompletedForToday = false,
   requirePhoto = true,
   allowSkip = false,
+  redirectTo,
   children,
 }: WeeklyVehicleCheckGateProps) {
+  const router = useRouter();
   const previewUrlRef = useRef<string | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -189,6 +193,10 @@ export function WeeklyVehicleCheckGate({
     }
 
     setIsConfirmedLocally(true);
+    if (redirectTo) {
+      router.push(redirectTo);
+      router.refresh();
+    }
   };
 
   const handleSkip = async () => {
@@ -205,6 +213,10 @@ export function WeeklyVehicleCheckGate({
     }
 
     setIsConfirmedLocally(true);
+    if (redirectTo) {
+      router.push(redirectTo);
+      router.refresh();
+    }
   };
 
   return (

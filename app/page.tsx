@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { getHomePath, getSession } from '@/lib/auth';
+import { getAppEntryPath, getSession } from '@/lib/auth';
 
 export default async function HomePage() {
   const session = await getSession();
@@ -8,5 +8,5 @@ export default async function HomePage() {
     redirect('/login');
   }
 
-  redirect(getHomePath(session.role));
+  redirect(getAppEntryPath(session.user.role));
 }

@@ -3,10 +3,9 @@ import { redirect } from 'next/navigation';
 
 import { AppTabs } from '@/components/home/app-tabs';
 import { Header } from '@/components/home/header';
-import { WeeklyVehicleCheckGate } from '@/components/home/weekly-vehicle-check-gate';
 import { getSession } from '@/lib/auth';
 import { pool } from '@/lib/db';
-import { getWeeklyVehicleCheckDateContext, hasWeeklyVehicleCheckForWeek } from '@/lib/weekly-vehicle-check';
+import { getHeaderFullName } from '@/lib/header-user';
 
 type AgendaEntry = {
   id: number;
@@ -123,105 +122,102 @@ export default async function AgendaPage({
 
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const query = resolvedSearchParams.q?.trim() ?? '';
-  const shouldShowWeeklyVehicleCheck = session.role === 'promotor';
+  const hasDatabaseConfig = Boolean(process.env.DATABASE_URL?.trim());
 
-  let fullName: string | null = null;
+  let fullName: string | null = session.user.fullName;
   let agendaEntries: AgendaEntry[] = [];
-  let hasCompletedWeeklyVehicleCheck = false;
+  let agendaUnavailableMessage: string | null = null;
 
-  try {
-    const client = await pool.connect();
+  fullName = await getHeaderFullName(session.accessToken, fullName);
 
+  if (!hasDatabaseConfig) {
+    agendaUnavailableMessage = 'A agenda local ainda nao esta configurada neste ambiente.';
+  } else {
     try {
-      const values: string[] = [session.email];
-      const filters: string[] = ['p.email = $1'];
+      const client = await pool.connect();
 
-      if (query) {
-        values.push(`%${query}%`);
-        filters.push(
-          `(c.fantasy_name ILIKE $${values.length} OR c.client_name ILIKE $${values.length} OR a.nickname ILIKE $${values.length} OR a.notes ILIKE $${values.length})`
-        );
+      try {
+        const values: string[] = [session.user.email];
+        const filters: string[] = ['p.email = $1'];
+
+        if (query) {
+          values.push(`%${query}%`);
+          filters.push(
+            `(c.fantasy_name ILIKE $${values.length} OR c.client_name ILIKE $${values.length} OR a.nickname ILIKE $${values.length} OR a.notes ILIKE $${values.length})`
+          );
+        }
+
+        const whereClause = `WHERE ${filters.join(' AND ')}`;
+
+        const [userResult, agendaResult] = await Promise.all([
+          client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.user.email]),
+          client.query(
+            `SELECT
+               a.id,
+               a.nickname,
+               a.notes,
+               c.id AS client_id,
+               c.fantasy_name,
+               c.client_name,
+               c.document,
+               c.city,
+               c.address,
+               c.address_number,
+               c.neighborhood,
+               c.state,
+               latest_visit.visit_date AS last_visit_date
+             FROM promotor_client_agenda a
+             INNER JOIN promotors p ON p.id = a.promotor_id
+             INNER JOIN clients c ON c.id = a.client_id
+             LEFT JOIN LATERAL (
+               SELECT v.visit_date
+               FROM visits v
+               WHERE v.promotor_id = p.id
+                 AND (
+                   v.establishment = coalesce(a.nickname, '')
+                   OR v.establishment = c.fantasy_name
+                   OR v.establishment = c.client_name
+                 )
+               ORDER BY v.visit_date DESC, v.id DESC
+               LIMIT 1
+             ) latest_visit ON TRUE
+             ${whereClause}
+             ORDER BY
+               coalesce(nullif(a.nickname, ''), nullif(c.fantasy_name, ''), c.client_name) ASC,
+               a.created_at DESC`,
+            values
+          ),
+        ]);
+
+        fullName = userResult.rows[0]?.full_name ?? fullName;
+        agendaEntries = agendaResult.rows.map((row) => ({
+          id: Number(row.id),
+          nickname: row.nickname ?? null,
+          notes: row.notes,
+          clientId: Number(row.client_id),
+          fantasyName: row.fantasy_name ?? '',
+          clientName: row.client_name ?? '',
+          document: row.document ?? '',
+          city: row.city ?? '',
+          address: row.address ?? '',
+          addressNumber: row.address_number ?? null,
+          neighborhood: row.neighborhood ?? '',
+          state: row.state ?? '',
+          lastVisitDate: row.last_visit_date ?? null,
+        }));
+      } finally {
+        client.release();
       }
-
-      const whereClause = `WHERE ${filters.join(' AND ')}`;
-
-      const [userResult, agendaResult] = await Promise.all([
-        client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
-        client.query(
-          `SELECT
-             a.id,
-             a.nickname,
-             a.notes,
-             c.id AS client_id,
-             c.fantasy_name,
-             c.client_name,
-             c.document,
-             c.city,
-             c.address,
-             c.address_number,
-             c.neighborhood,
-             c.state,
-             latest_visit.visit_date AS last_visit_date
-           FROM promotor_client_agenda a
-           INNER JOIN promotors p ON p.id = a.promotor_id
-           INNER JOIN clients c ON c.id = a.client_id
-           LEFT JOIN LATERAL (
-             SELECT v.visit_date
-             FROM visits v
-             WHERE v.promotor_id = p.id
-               AND (
-                 v.establishment = coalesce(a.nickname, '')
-                 OR v.establishment = c.fantasy_name
-                 OR v.establishment = c.client_name
-               )
-             ORDER BY v.visit_date DESC, v.id DESC
-             LIMIT 1
-           ) latest_visit ON TRUE
-           ${whereClause}
-           ORDER BY
-             coalesce(nullif(a.nickname, ''), nullif(c.fantasy_name, ''), c.client_name) ASC,
-             a.created_at DESC`,
-          values
-        ),
-      ]);
-
-      fullName = userResult.rows[0]?.full_name ?? null;
-      const promotorId = Number(userResult.rows[0]?.id ?? 0);
-      agendaEntries = agendaResult.rows.map((row) => ({
-        id: Number(row.id),
-        nickname: row.nickname ?? null,
-        notes: row.notes,
-        clientId: Number(row.client_id),
-        fantasyName: row.fantasy_name ?? '',
-        clientName: row.client_name ?? '',
-        document: row.document ?? '',
-        city: row.city ?? '',
-        address: row.address ?? '',
-        addressNumber: row.address_number ?? null,
-        neighborhood: row.neighborhood ?? '',
-        state: row.state ?? '',
-        lastVisitDate: row.last_visit_date ?? null,
-      }));
-
-      if (shouldShowWeeklyVehicleCheck && promotorId) {
-        const { weekStartDateKey, weekEndDateKey } = getWeeklyVehicleCheckDateContext();
-        hasCompletedWeeklyVehicleCheck = await hasWeeklyVehicleCheckForWeek(
-          promotorId,
-          weekStartDateKey,
-          weekEndDateKey
-        );
-      }
-    } finally {
-      client.release();
+    } catch (error) {
+      agendaUnavailableMessage = 'Nao foi possivel carregar a agenda local neste ambiente.';
+      console.error('Agenda lookup error:', error);
     }
-  } catch (error) {
-    console.error('Agenda lookup error:', error);
   }
 
   const content = (
     <main className="min-h-screen bg-[var(--background)] px-4 pt-15">
       <Header fullName={fullName} />
-      <AppTabs current="agenda" role={session.role} />
+      <AppTabs current="agenda" role={session.user.role} />
 
       <section className="mx-auto w-full max-w-4xl px-6 pt-8">
         <div className="flex items-start justify-between gap-4">
@@ -259,6 +255,12 @@ export default async function AgendaPage({
         </form>
 
         <div className="mt-6 space-y-3">
+          {agendaUnavailableMessage ? (
+            <div className="rounded-2xl border border-[#ffb3b3]/30 bg-[#5c1f1f]/45 px-4 py-6 text-sm text-[#ffe2e2]">
+              {agendaUnavailableMessage}
+            </div>
+          ) : null}
+
           {agendaEntries.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-6 text-sm text-white/75">
               Nenhum cliente encontrado para os filtros atuais.
@@ -271,16 +273,5 @@ export default async function AgendaPage({
     </main>
   );
 
-  if (!shouldShowWeeklyVehicleCheck) {
-    return content;
-  }
-
-  return (
-    <WeeklyVehicleCheckGate
-      initialCompletedForToday={hasCompletedWeeklyVehicleCheck}
-      allowSkip
-    >
-      {content}
-    </WeeklyVehicleCheckGate>
-  );
+  return content;
 }

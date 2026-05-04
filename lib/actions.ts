@@ -1,11 +1,20 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { pool } from '@/lib/db';
-import { clearSession, createSession, getHomePath, getSession } from '@/lib/auth';
+import { clearSession, createSession, getAppEntryPath, getHomePath, getSession } from '@/lib/auth';
 import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
+import { ApiError } from '@/lib/api/client';
+import {
+  createPromotorMileage,
+  createPromotorVisit,
+  getPromotorMe,
+  signInPromotor,
+  signUpPromotor,
+  updatePromotorVisit,
+} from '@/lib/api/promotor';
+import { createCommercialVisit, updateCommercialVisit } from '@/lib/api/comercial';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -145,8 +154,25 @@ function normalizeTextSearch(value: string) {
     .toLowerCase();
 }
 
-function looksLikePasswordHash(password: string) {
-  return password.startsWith('$2a$') || password.startsWith('$2b$') || password.startsWith('$2y$');
+function decodeJwtPayload(token: string) {
+  const parts = token.split('.');
+
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const normalized = parts[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, '=');
+    const json = Buffer.from(normalized, 'base64').toString('utf-8');
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 async function getCurrentPromotorId() {
@@ -156,10 +182,21 @@ async function getCurrentPromotorId() {
     return null;
   }
 
+  if (typeof session.user.id === 'number') {
+    return session.user.id;
+  }
+
+  const jwtPayload = decodeJwtPayload(session.accessToken);
+  const tokenSubject = Number(jwtPayload?.sub);
+
+  if (Number.isFinite(tokenSubject) && tokenSubject > 0) {
+    return tokenSubject;
+  }
+
   const client = await pool.connect();
 
   try {
-    const result = await client.query('SELECT id FROM promotors WHERE email = $1', [session.email]);
+    const result = await client.query('SELECT id FROM promotors WHERE email = $1', [session.user.email]);
     return result.rows[0]?.id ?? null;
   } finally {
     client.release();
@@ -183,82 +220,37 @@ function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['prod
     }));
 }
 
-function isVisitEditable(createdAt: string | Date, isDraft: boolean) {
-  if (isDraft) {
-    return true;
-  }
-
-  const createdAtDate = createdAt instanceof Date ? createdAt : new Date(createdAt);
-  const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
-
-  return Date.now() - createdAtDate.getTime() <= sevenDaysInMs;
-}
-
-function isMissingVisitImageColumnError(error: unknown) {
-  if (!error || typeof error !== 'object' || !('code' in error)) {
-    return false;
-  }
-
-  const databaseError = error as { code?: string; message?: string };
-
-  return (
-    databaseError.code === '42703' &&
-    typeof databaseError.message === 'string' &&
-    (databaseError.message.includes('before_image') || databaseError.message.includes('after_image'))
-  );
-}
-
 export async function login(data: z.infer<typeof loginSchema>) {
   const validation = loginSchema.safeParse(data);
 
   if (!validation.success) {
-    return { success: false, error: 'Invalid data' };
+    return { success: false, error: 'Dados invalidos.' };
   }
 
-  const { email, password } = validation.data;
-
   try {
-    const client = await pool.connect();
-    try {
-      const result = await client.query('SELECT * FROM promotors WHERE email = $1', [email]);
-      const user = result.rows[0];
+    const authResult = await signInPromotor(validation.data);
+    const me = await getPromotorMe(authResult.accessToken).catch(() => authResult.user);
+    const user = {
+      ...authResult.user,
+      ...me,
+      role: me.role === 'comercial' ? 'comercial' : authResult.user.role,
+      email: me.email || authResult.user.email || validation.data.email,
+      fullName: me.fullName ?? authResult.user.fullName,
+      id: me.id ?? authResult.user.id,
+    };
 
-      if (!user) {
-        return { success: false, error: 'Invalid credentials' };
-      }
+    await createSession({
+      accessToken: authResult.accessToken,
+      user,
+    });
 
-      let passwordMatches = false;
-
-      if (looksLikePasswordHash(user.password)) {
-        passwordMatches = await bcrypt.compare(password, user.password);
-      } else {
-        passwordMatches = user.password === password;
-
-        if (passwordMatches) {
-          const hashedPassword = await bcrypt.hash(password, 12);
-
-          await client.query('UPDATE promotors SET password = $1 WHERE id = $2', [
-            hashedPassword,
-            user.id,
-          ]);
-        }
-      }
-
-      if (!passwordMatches) {
-        return { success: false, error: 'Invalid credentials' };
-      }
-
-      const role = user.role === 'comercial' ? 'comercial' : 'promotor';
-
-      await createSession(email, role);
-
-      return { success: true, homePath: getHomePath(role) };
-    } finally {
-      client.release();
-    }
+    return { success: true, homePath: getAppEntryPath(user.role) };
   } catch (error) {
-    console.error('Login error:', error);
-    return { success: false, error: 'Database connection failed' };
+    console.error('Login API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Credenciais invalidas.' };
+    }
+    return { success: false, error: 'Nao foi possivel entrar com a API externa.' };
   }
 }
 
@@ -266,37 +258,33 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
   const validation = signupSchema.safeParse(data);
 
   if (!validation.success) {
-    return { success: false, error: 'Invalid data' };
+    return { success: false, error: 'Dados invalidos.' };
   }
 
-  const { email, fullName, password, role } = validation.data;
-
   try {
-    const client = await pool.connect();
+    const authResult = await signUpPromotor(validation.data);
+    const me = await getPromotorMe(authResult.accessToken).catch(() => authResult.user);
+    const user = {
+      ...authResult.user,
+      ...me,
+      role: validation.data.role,
+      email: me.email || authResult.user.email || validation.data.email,
+      fullName: me.fullName ?? authResult.user.fullName ?? validation.data.fullName,
+      id: me.id ?? authResult.user.id,
+    };
 
-    try {
-      const existingUser = await client.query('SELECT 1 FROM promotors WHERE email = $1', [email]);
+    await createSession({
+      accessToken: authResult.accessToken,
+      user,
+    });
 
-      if (existingUser.rowCount) {
-        return { success: false, error: 'Email already registered' };
-      }
-
-      const hashedPassword = await bcrypt.hash(password, 12);
-
-      await client.query(
-        'INSERT INTO promotors (full_name, email, password, role) VALUES ($1, $2, $3, $4)',
-        [fullName, email, hashedPassword, role]
-      );
-    } finally {
-      client.release();
-    }
-
-    await createSession(email, role);
-
-    return { success: true, homePath: getHomePath(role) };
+    return { success: true, homePath: getAppEntryPath(user.role) };
   } catch (error) {
-    console.error('Signup error:', error);
-    return { success: false, error: 'Could not create account' };
+    console.error('Signup API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel criar a conta.' };
+    }
+    return { success: false, error: 'Nao foi possivel criar a conta.' };
   }
 }
 
@@ -307,7 +295,7 @@ export async function logout() {
 export async function getSessionHomePath() {
   const session = await getSession();
 
-  return getHomePath(session?.role);
+  return getHomePath(session?.user.role);
 }
 
 export async function searchClients(
@@ -559,9 +547,9 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
 }
 
 export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: number) {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -593,69 +581,19 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
   });
 
   try {
-    const client = await pool.connect();
+    const payload = {
+      establishment: validation.data.establishment,
+      date: visitDate,
+      products,
+      beforeImage: validation.data.beforeImage || '',
+      afterImage: validation.data.afterImage || '',
+      isDraft: false,
+    };
 
-    try {
-      if (visitId) {
-        const existingVisit = await client.query(
-          'SELECT id, created_at, is_draft FROM visits WHERE id = $1 AND promotor_id = $2',
-          [visitId, promotorId]
-        );
-
-        if (!existingVisit.rowCount) {
-          return { success: false, error: 'Visita nao encontrada.' };
-        }
-
-        const visit = existingVisit.rows[0];
-
-        if (!isVisitEditable(visit.created_at, Boolean(visit.is_draft))) {
-          return { success: false, error: 'O prazo de 7 dias para editar esta visita já expirou.' };
-        }
-
-        await client.query(
-          `UPDATE visits
-           SET establishment = $1,
-               visit_date = $2,
-               products = $3::jsonb,
-               before_image = $4,
-               after_image = $5,
-               is_draft = FALSE,
-               updated_at = NOW()
-           WHERE id = $6 AND promotor_id = $7`,
-          [
-            validation.data.establishment,
-            visitDate,
-            JSON.stringify(products),
-            validation.data.beforeImage || null,
-            validation.data.afterImage || null,
-            visitId,
-            promotorId,
-          ]
-        );
-      } else {
-        await client.query(
-          `INSERT INTO visits (
-             promotor_id,
-             establishment,
-             visit_date,
-             products,
-             before_image,
-             after_image,
-             is_draft
-           )
-           VALUES ($1, $2, $3, $4::jsonb, $5, $6, FALSE)`,
-          [
-            promotorId,
-            validation.data.establishment,
-            visitDate,
-            JSON.stringify(products),
-            validation.data.beforeImage || null,
-            validation.data.afterImage || null,
-          ]
-        );
-      }
-    } finally {
-      client.release();
+    if (visitId) {
+      await updatePromotorVisit(session.accessToken, visitId, payload);
+    } else {
+      await createPromotorVisit(session.accessToken, payload);
     }
 
     revalidatePath('/');
@@ -667,12 +605,9 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
 
     return { success: true };
   } catch (error) {
-    console.error('Create visit error:', error);
-    if (isMissingVisitImageColumnError(error)) {
-      return {
-        success: false,
-        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
-      };
+    console.error('Create visit API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel salvar a visita.' };
     }
     return { success: false, error: 'Nao foi possivel salvar a visita.' };
   }
@@ -682,9 +617,9 @@ export async function saveVisitDraft(
   data: z.infer<typeof visitDraftSchema>,
   visitId?: number
 ) {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -694,138 +629,51 @@ export async function saveVisitDraft(
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 
-  const establishment = validation.data.establishment.trim() || null;
+  const establishment = validation.data.establishment.trim() || '';
   const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
     ? parseDisplayDateToDatabase(validation.data.date)
     : null;
   const draftProducts = normalizeDraftProducts(validation.data.products);
 
   try {
-    const client = await pool.connect();
+    const payload = {
+      establishment,
+      date: visitDate ?? '',
+      products: draftProducts,
+      beforeImage: validation.data.beforeImage || '',
+      afterImage: validation.data.afterImage || '',
+      isDraft: true,
+    };
 
-    try {
-      if (visitId) {
-        const existingVisit = await client.query(
-          'SELECT id FROM visits WHERE id = $1 AND promotor_id = $2',
-          [visitId, promotorId]
-        );
+    const savedVisit = visitId
+      ? await updatePromotorVisit(session.accessToken, visitId, payload)
+      : await createPromotorVisit(session.accessToken, payload);
 
-        if (!existingVisit.rowCount) {
-          return { success: false, error: 'Visita nao encontrada.' };
-        }
+    const nextVisitId = savedVisit?.id ?? visitId;
 
-        await client.query(
-          `UPDATE visits
-           SET establishment = $1,
-               visit_date = $2,
-               products = $3::jsonb,
-               before_image = $4,
-               after_image = $5,
-               is_draft = TRUE,
-               updated_at = NOW()
-           WHERE id = $6 AND promotor_id = $7`,
-          [
-            establishment,
-            visitDate,
-            JSON.stringify(draftProducts),
-            validation.data.beforeImage || null,
-            validation.data.afterImage || null,
-            visitId,
-            promotorId,
-          ]
-        );
-
-        revalidatePath('/');
-        revalidatePath(`/visitas/${visitId}`);
-        revalidatePath(`/visitas/${visitId}/editar`);
-
-        return { success: true, visitId };
-      }
-
-      const result = await client.query(
-        `INSERT INTO visits (
-           promotor_id,
-           establishment,
-           visit_date,
-           products,
-           before_image,
-           after_image,
-           is_draft
-         )
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6, TRUE)
-         RETURNING id`,
-        [
-          promotorId,
-          establishment,
-          visitDate,
-          JSON.stringify(draftProducts),
-          validation.data.beforeImage || null,
-          validation.data.afterImage || null,
-        ]
-      );
-
-      const createdVisitId = Number(result.rows[0]?.id);
-
-      revalidatePath('/');
-      revalidatePath('/visitas/nova');
-      revalidatePath(`/visitas/${createdVisitId}`);
-      revalidatePath(`/visitas/${createdVisitId}/editar`);
-
-      return { success: true, visitId: createdVisitId };
-    } finally {
-      client.release();
+    revalidatePath('/');
+    revalidatePath('/visitas/nova');
+    if (nextVisitId) {
+      revalidatePath(`/visitas/${nextVisitId}`);
+      revalidatePath(`/visitas/${nextVisitId}/editar`);
     }
+
+    return { success: true, visitId: nextVisitId };
   } catch (error) {
-    console.error('Save visit draft error:', error);
-    if (isMissingVisitImageColumnError(error)) {
-      return {
-        success: false,
-        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
-      };
+    console.error('Save visit draft API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel salvar o rascunho.' };
     }
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 }
 
 export async function deleteVisitDraft(visitId: number) {
-  const promotorId = await getCurrentPromotorId();
-
-  if (!promotorId) {
-    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
-  }
-
-  try {
-    const client = await pool.connect();
-
-    try {
-      const existingVisit = await client.query(
-        'SELECT id, is_draft FROM visits WHERE id = $1 AND promotor_id = $2',
-        [visitId, promotorId]
-      );
-
-      if (!existingVisit.rowCount) {
-        return { success: false, error: 'Rascunho nao encontrado.' };
-      }
-
-      if (!existingVisit.rows[0].is_draft) {
-        return { success: false, error: 'Apenas rascunhos podem ser excluidos.' };
-      }
-
-      await client.query('DELETE FROM visits WHERE id = $1 AND promotor_id = $2', [visitId, promotorId]);
-    } finally {
-      client.release();
-    }
-
-    revalidatePath('/');
-    revalidatePath('/visitas/nova');
-    revalidatePath(`/visitas/${visitId}`);
-    revalidatePath(`/visitas/${visitId}/editar`);
-
-    return { success: true };
-  } catch (error) {
-    console.error('Delete visit draft error:', error);
-    return { success: false, error: 'Nao foi possivel excluir o rascunho.' };
-  }
+  void visitId;
+  return {
+    success: false,
+    error: 'A API externa atual nao expoe exclusao de rascunho.',
+  };
 }
 
 export async function createCommercialSubmission(
@@ -858,49 +706,30 @@ export async function createCommercialSubmission(
   } = validation.data;
 
   try {
-    const client = await pool.connect();
+    const createdVisit = await createCommercialVisit(session.accessToken, {
+      clientName,
+      fantasyName,
+      cnpj: cnpj ? normalizeDigits(cnpj) : null,
+      email: email || null,
+      phone,
+      address,
+      value,
+      salesQuantity,
+      sold,
+      visitDates,
+    });
 
-    try {
-      const result = await client.query(
-        `INSERT INTO commercial_submissions (
-           client_name,
-           fantasy_name,
-           cnpj,
-           email,
-           phone,
-           address,
-           total_value,
-           sales_quantity,
-           sold,
-           visit_dates,
-           submitted_by_email
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
-         RETURNING id`,
-        [
-          clientName,
-          fantasyName,
-          cnpj ? normalizeDigits(cnpj) : null,
-          email || null,
-          phone,
-          address,
-          value,
-          salesQuantity,
-          sold,
-          JSON.stringify(visitDates),
-          session.email,
-        ]
-      );
+    revalidatePath('/comercial');
 
-      const submissionId = Number(result.rows[0]?.id ?? 0);
-
-      revalidatePath('/comercial');
-
-      return { success: true, submissionId };
-    } finally {
-      client.release();
-    }
+    return { success: true, submissionId: createdVisit?.id ?? 0 };
   } catch (error) {
-    console.error('Create commercial submission error:', error);
+    console.error('Create commercial submission API error:', error);
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel salvar o formulario do comercial.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel salvar o formulario do comercial.' };
   }
 }
@@ -936,48 +765,18 @@ export async function updateCommercialSubmission(
   } = validation.data;
 
   try {
-    const client = await pool.connect();
-
-    try {
-      const existingSubmission = await client.query(
-        'SELECT id FROM commercial_submissions WHERE id = $1',
-        [submissionId]
-      );
-
-      if (!existingSubmission.rowCount) {
-        return { success: false, error: 'Cliente do comercial nao encontrado.' };
-      }
-
-      await client.query(
-        `UPDATE commercial_submissions
-         SET client_name = $1,
-             fantasy_name = $2,
-             cnpj = $3,
-             email = $4,
-             phone = $5,
-             address = $6,
-             total_value = $7,
-             sales_quantity = $8,
-             sold = $9,
-             visit_dates = $10::jsonb
-         WHERE id = $11`,
-        [
-          clientName,
-          fantasyName,
-          cnpj ? normalizeDigits(cnpj) : null,
-          email || null,
-          phone,
-          address,
-          value,
-          salesQuantity,
-          sold,
-          JSON.stringify(visitDates),
-          submissionId,
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await updateCommercialVisit(session.accessToken, submissionId, {
+      clientName,
+      fantasyName,
+      cnpj: cnpj ? normalizeDigits(cnpj) : null,
+      email: email || null,
+      phone,
+      address,
+      value,
+      salesQuantity,
+      sold,
+      visitDates,
+    });
 
     revalidatePath('/comercial');
     revalidatePath(`/comercial/${submissionId}`);
@@ -985,7 +784,13 @@ export async function updateCommercialSubmission(
 
     return { success: true, submissionId };
   } catch (error) {
-    console.error('Update commercial submission error:', error);
+    console.error('Update commercial submission API error:', error);
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel atualizar o cliente do comercial.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel atualizar o cliente do comercial.' };
   }
 }
@@ -994,9 +799,9 @@ export async function saveWeeklyVehicleCheck(
   formData: FormData,
   options?: { allowWithoutPhoto?: boolean }
 ) {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -1026,103 +831,78 @@ export async function saveWeeklyVehicleCheck(
   }
 
   const { dateKey } = getWeeklyVehicleCheckDateContext();
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Promotor nao identificado para registrar a quilometragem.' };
+  }
 
   try {
-    const placeholderBase64 =
-      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
-    const fallbackImageBuffer = Buffer.from(placeholderBase64, 'base64');
-    const hasImage = image instanceof File && image.size > 0;
-    const imageBuffer = hasImage
-      ? Buffer.from(await image.arrayBuffer())
-      : fallbackImageBuffer;
-    const imageMimeType = hasImage ? image.type : 'image/jpeg';
-    const imageName = hasImage ? image.name || null : 'teste-sem-foto.jpg';
-    const client = await pool.connect();
+    const imageBase64 =
+      image instanceof File && image.size > 0
+        ? Buffer.from(await image.arrayBuffer()).toString('base64')
+        : 'b2zDoSA=';
+    const imageMimeType =
+      image instanceof File && image.size > 0
+        ? image.type || 'image/jpeg'
+        : '';
 
-    try {
-      await client.query(
-        `INSERT INTO vehicle_mileage_checks (
-           promotor_id,
-           check_date,
-           mileage,
-           image_data,
-           image_mime_type,
-           image_name
-         ) VALUES ($1, $2::date, $3, $4, $5, $6)
-         ON CONFLICT (promotor_id, check_date)
-         DO UPDATE SET
-           mileage = EXCLUDED.mileage,
-           image_data = EXCLUDED.image_data,
-           image_mime_type = EXCLUDED.image_mime_type,
-           image_name = EXCLUDED.image_name,
-           updated_at = NOW()`,
-        [
-          promotorId,
-          dateKey,
-          validation.data.mileage,
-          imageBuffer,
-          imageMimeType,
-          imageName,
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await createPromotorMileage(session.accessToken, {
+      promotorId,
+      mileage: validation.data.mileage,
+      checkDate: dateKey,
+      imageBase64,
+      imageMimeType,
+    });
 
     revalidatePath('/');
     revalidatePath('/agenda');
 
     return { success: true };
   } catch (error) {
-    console.error('Save weekly vehicle check error:', error);
+    console.error('Save weekly vehicle check API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel salvar a quilometragem.' };
+    }
     return { success: false, error: 'Nao foi possivel salvar a quilometragem.' };
   }
 }
 
 export async function skipWeeklyVehicleCheck() {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
   const { dateKey } = getWeeklyVehicleCheckDateContext();
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Promotor nao identificado para registrar a quilometragem.' };
+  }
 
   try {
-    const placeholderBase64 =
-      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
-    const imageBuffer = Buffer.from(placeholderBase64, 'base64');
-    const client = await pool.connect();
-
-    try {
-      await client.query(
-        `INSERT INTO vehicle_mileage_checks (
-           promotor_id,
-           check_date,
-           mileage,
-           image_data,
-           image_mime_type,
-           image_name
-         ) VALUES ($1, $2::date, $3, $4, $5, $6)
-         ON CONFLICT (promotor_id, check_date)
-         DO UPDATE SET
-           mileage = EXCLUDED.mileage,
-           image_data = EXCLUDED.image_data,
-           image_mime_type = EXCLUDED.image_mime_type,
-           image_name = EXCLUDED.image_name,
-           updated_at = NOW()`,
-        [promotorId, dateKey, 0, imageBuffer, 'image/jpeg', 'quilometragem-pulada.jpg']
-      );
-    } finally {
-      client.release();
-    }
+    await createPromotorMileage(session.accessToken, {
+      promotorId,
+      mileage: 0,
+      checkDate: dateKey,
+      imageBase64: 'b2zDoSA=',
+      imageMimeType: '',
+    });
 
     revalidatePath('/');
     revalidatePath('/agenda');
 
     return { success: true };
   } catch (error) {
-    console.error('Skip weekly vehicle check error:', error);
+    console.error('Skip weekly vehicle check API error:', error);
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel registrar o pulo da quilometragem.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel registrar o pulo da quilometragem.' };
   }
 }

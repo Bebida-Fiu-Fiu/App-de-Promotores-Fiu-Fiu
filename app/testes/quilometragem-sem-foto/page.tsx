@@ -21,7 +21,7 @@ export default async function WeeklyVehicleCheckTestPage() {
       <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(0,156,108,0.12),_transparent_32%),linear-gradient(180deg,_#0f2d3d_0%,_var(--background)_42%,_#091c27_100%)] px-4 py-10 pb-28 text-white">
         <section className="mx-auto w-full max-w-3xl rounded-[28px] border border-white/10 bg-white/[0.05] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.2)]">
           <Link
-            href={getHomePath(session.role)}
+            href={getHomePath(session.user.role)}
             className="inline-flex items-center gap-2 text-sm font-medium text-white/70 transition hover:text-white"
           >
             <ArrowLeft size={18} />

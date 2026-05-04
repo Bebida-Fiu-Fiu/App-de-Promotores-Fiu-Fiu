@@ -3,8 +3,8 @@ import { ArrowLeft } from 'lucide-react';
 import { notFound, redirect } from 'next/navigation';
 
 import { NewVisitForm } from '@/components/visits/new-visit-form';
-import { getSession } from '@/lib/auth';
-import { pool } from '@/lib/db';
+import { getPromotorIdFromSession, getSession } from '@/lib/auth';
+import { listPromotorVisitsByPromotorId } from '@/lib/api/promotor';
 
 type EditableVisitProduct = {
   name: string;
@@ -60,27 +60,18 @@ export default async function EditVisitPage({
     | null = null;
 
   try {
-    const client = await pool.connect();
-    try {
-      const result = await client.query(
-        `SELECT v.establishment, v.visit_date, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
-         FROM visits v
-         INNER JOIN promotors p ON p.id = v.promotor_id
-         WHERE v.id = $1 AND p.email = $2`,
-        [id, session.email]
-      );
+    const promotorId = getPromotorIdFromSession(session);
 
-      if (result.rowCount) {
-        const row = result.rows[0];
-        const canEdit =
-          Boolean(row.is_draft) ||
-          Date.now() - new Date(row.created_at).getTime() <= 7 * 24 * 60 * 60 * 1000;
+    if (typeof promotorId === 'number') {
+      const visits = await listPromotorVisitsByPromotorId(session.accessToken, promotorId);
+      const row = visits.find((entry) => entry.id === Number(id));
 
+      if (row) {
         visit = {
           establishment: row.establishment ?? '',
-          date: formatDatabaseDateToDisplay(row.visit_date),
-          beforeImage: row.before_image ?? '',
-          afterImage: row.after_image ?? '',
+          date: formatDatabaseDateToDisplay(row.visitDate),
+          beforeImage: row.beforeImage ?? '',
+          afterImage: row.afterImage ?? '',
           products: Array.isArray(row.products) && row.products.length > 0
             ? (row.products as StoredVisitProduct[]).map((product) => ({
                 name: product.name ?? '',
@@ -97,15 +88,13 @@ export default async function EditVisitPage({
                   expirationDate: '',
                 },
               ],
-          isDraft: Boolean(row.is_draft),
-          canEdit,
+          isDraft: Boolean(row.isDraft),
+          canEdit: row.canEdit,
         };
       }
-    } finally {
-      client.release();
     }
   } catch (error) {
-    console.error('Edit visit lookup error:', error);
+    console.error('Edit visit API lookup error:', error);
   }
 
   if (!visit) {

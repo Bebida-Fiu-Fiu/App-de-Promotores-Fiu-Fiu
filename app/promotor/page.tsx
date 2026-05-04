@@ -10,5 +10,5 @@ export default async function PromotorHomePage() {
     redirect('/login');
   }
 
-  return <HomePageContent email={session.email} role="promotor" />;
+  return <HomePageContent accessToken={session.accessToken} user={session.user} />;
 }

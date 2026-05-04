@@ -4,8 +4,9 @@ import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
-import { getHomePath, getSession } from '@/lib/auth';
-import { pool } from '@/lib/db';
+import { getHomePath, getPromotorIdFromSession, getSession } from '@/lib/auth';
+import { listPromotorVisitsByPromotorId } from '@/lib/api/promotor';
+import { getHeaderFullName } from '@/lib/header-user';
 
 type VisitProduct = {
   name: string;
@@ -39,9 +40,10 @@ export default async function VisitDetailsPage({
     redirect('/login');
   }
 
+  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
+
   const { id } = await params;
 
-  let fullName: string | null = null;
   let visit:
     | {
         establishment: string;
@@ -55,40 +57,26 @@ export default async function VisitDetailsPage({
     | null = null;
 
   try {
-    const client = await pool.connect();
-    try {
-      const [userResult, visitResult] = await Promise.all([
-        client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
-        client.query(
-          `SELECT v.establishment, v.visit_date, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
-           FROM visits v
-           INNER JOIN promotors p ON p.id = v.promotor_id
-           WHERE v.id = $1 AND p.email = $2`,
-          [id, session.email]
-        ),
-      ]);
+    const promotorId = getPromotorIdFromSession(session);
 
-      fullName = userResult.rows[0]?.full_name ?? null;
+    if (typeof promotorId === 'number') {
+      const visits = await listPromotorVisitsByPromotorId(session.accessToken, promotorId);
+      const currentVisit = visits.find((entry) => entry.id === Number(id));
 
-      if (visitResult.rowCount) {
-        const row = visitResult.rows[0];
+      if (currentVisit) {
         visit = {
-          establishment: row.establishment ?? 'Rascunho sem estabelecimento',
-          visitDate: formatDatabaseDateToDisplay(row.visit_date),
-          products: Array.isArray(row.products) ? row.products : [],
-          beforeImage: row.before_image ?? '',
-          afterImage: row.after_image ?? '',
-          isDraft: Boolean(row.is_draft),
-          canEdit:
-            Boolean(row.is_draft) ||
-            Date.now() - new Date(row.created_at).getTime() <= 7 * 24 * 60 * 60 * 1000,
+          establishment: currentVisit.establishment ?? 'Rascunho sem estabelecimento',
+          visitDate: formatDatabaseDateToDisplay(currentVisit.visitDate),
+          products: currentVisit.products,
+          beforeImage: currentVisit.beforeImage ?? '',
+          afterImage: currentVisit.afterImage ?? '',
+          isDraft: Boolean(currentVisit.isDraft),
+          canEdit: currentVisit.canEdit,
         };
       }
-    } finally {
-      client.release();
     }
   } catch (error) {
-    console.error('Visit details lookup error:', error);
+    console.error('Visit details API lookup error:', error);
   }
 
   if (!visit) {
@@ -135,7 +123,7 @@ export default async function VisitDetailsPage({
                 />
               )}
               <Link
-                href={getHomePath(session.role)}
+                href={getHomePath(session.user.role)}
                 className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
               >
                 Voltar
