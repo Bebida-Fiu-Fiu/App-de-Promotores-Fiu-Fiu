@@ -46,6 +46,7 @@ export default async function VisitDetailsPage({
     | {
         establishment: string;
         visitDate: string;
+        observation: string;
         products: VisitProduct[];
         beforeImage: string;
         afterImage: string;
@@ -60,7 +61,7 @@ export default async function VisitDetailsPage({
       const [userResult, visitResult] = await Promise.all([
         client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
         client.query(
-          `SELECT v.establishment, v.visit_date, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
+          `SELECT v.establishment, v.visit_date, v.observation, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
            FROM visits v
            INNER JOIN promotors p ON p.id = v.promotor_id
            WHERE v.id = $1 AND p.email = $2`,
@@ -75,6 +76,7 @@ export default async function VisitDetailsPage({
         visit = {
           establishment: row.establishment ?? 'Rascunho sem estabelecimento',
           visitDate: formatDatabaseDateToDisplay(row.visit_date),
+          observation: row.observation ?? '',
           products: Array.isArray(row.products) ? row.products : [],
           beforeImage: row.before_image ?? '',
           afterImage: row.after_image ?? '',
@@ -145,6 +147,17 @@ export default async function VisitDetailsPage({
         </div>
 
         <div className="mt-6">
+          {visit.observation && (
+            <article className="mb-6 rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-5 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
+                Observacao
+              </p>
+              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-white/85">
+                {visit.observation}
+              </p>
+            </article>
+          )}
+
           {(visit.beforeImage || visit.afterImage) && (
             <div className="mb-6 grid gap-4 sm:grid-cols-2">
               {visit.beforeImage && (
