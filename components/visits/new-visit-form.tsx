@@ -44,6 +44,7 @@ const packageOptions = ['unidade', 'pack', 'caixa'] as const;
 type VisitFormValues = {
   establishment: string;
   date: string;
+  observation: string;
   beforeImage: string;
   afterImage: string;
   products: {
@@ -494,6 +495,7 @@ export function NewVisitForm({
     defaultValues: {
       establishment: initialData?.establishment ?? '',
       date: initialData?.date ?? formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      observation: initialData?.observation ?? '',
       beforeImage: initialData?.beforeImage ?? '',
       afterImage: initialData?.afterImage ?? '',
       products: initialData?.products?.length
@@ -628,6 +630,7 @@ export function NewVisitForm({
     reset({
       establishment: '',
       date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
+      observation: '',
       beforeImage: '',
       afterImage: '',
       products: [
@@ -1001,6 +1004,21 @@ export function NewVisitForm({
                 }}
               />
             </div>
+          </div>
+
+          <div className="space-y-1">
+            <label htmlFor="visit-observation" className="block text-sm font-medium">
+              Observacao
+            </label>
+            <textarea
+              id="visit-observation"
+              rows={4}
+              placeholder="Digite uma observacao sobre a visita"
+              className="w-full rounded-md border border-[#707070] bg-white/20 px-3 py-2 text-sm outline-none"
+              {...register('observation', {
+                onChange: () => setFormError(null),
+              })}
+            />
           </div>
 
           <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">

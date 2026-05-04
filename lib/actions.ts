@@ -54,6 +54,7 @@ const visitProductSchema = z.object({
 const visitSchema = z.object({
   establishment: z.string().min(1),
   date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
+  observation: z.string().trim().optional().default(''),
   products: z.array(visitProductSchema).min(1),
   beforeImage: z.string().trim().optional().default(''),
   afterImage: z.string().trim().optional().default(''),
@@ -62,6 +63,7 @@ const visitSchema = z.object({
 const visitDraftSchema = z.object({
   establishment: z.string().trim().optional().default(''),
   date: z.string().trim().optional().default(''),
+  observation: z.string().trim().optional().default(''),
   products: z.array(
     z.object({
       name: z.string().trim().optional().default(''),
@@ -616,15 +618,17 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
           `UPDATE visits
            SET establishment = $1,
                visit_date = $2,
-               products = $3::jsonb,
-               before_image = $4,
-               after_image = $5,
+               observation = $3,
+               products = $4::jsonb,
+               before_image = $5,
+               after_image = $6,
                is_draft = FALSE,
                updated_at = NOW()
-           WHERE id = $6 AND promotor_id = $7`,
+           WHERE id = $7 AND promotor_id = $8`,
           [
             validation.data.establishment,
             visitDate,
+            validation.data.observation || null,
             JSON.stringify(products),
             validation.data.beforeImage || null,
             validation.data.afterImage || null,
@@ -638,16 +642,18 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
              promotor_id,
              establishment,
              visit_date,
+             observation,
              products,
              before_image,
              after_image,
              is_draft
            )
-           VALUES ($1, $2, $3, $4::jsonb, $5, $6, FALSE)`,
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE)`,
           [
             promotorId,
             validation.data.establishment,
             visitDate,
+            validation.data.observation || null,
             JSON.stringify(products),
             validation.data.beforeImage || null,
             validation.data.afterImage || null,
@@ -698,6 +704,7 @@ export async function saveVisitDraft(
   const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
     ? parseDisplayDateToDatabase(validation.data.date)
     : null;
+  const observation = validation.data.observation.trim() || null;
   const draftProducts = normalizeDraftProducts(validation.data.products);
 
   try {
@@ -718,15 +725,17 @@ export async function saveVisitDraft(
           `UPDATE visits
            SET establishment = $1,
                visit_date = $2,
-               products = $3::jsonb,
-               before_image = $4,
-               after_image = $5,
+               observation = $3,
+               products = $4::jsonb,
+               before_image = $5,
+               after_image = $6,
                is_draft = TRUE,
                updated_at = NOW()
-           WHERE id = $6 AND promotor_id = $7`,
+           WHERE id = $7 AND promotor_id = $8`,
           [
             establishment,
             visitDate,
+            observation,
             JSON.stringify(draftProducts),
             validation.data.beforeImage || null,
             validation.data.afterImage || null,
@@ -747,17 +756,19 @@ export async function saveVisitDraft(
            promotor_id,
            establishment,
            visit_date,
+           observation,
            products,
            before_image,
            after_image,
            is_draft
          )
-         VALUES ($1, $2, $3, $4::jsonb, $5, $6, TRUE)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, TRUE)
          RETURNING id`,
         [
           promotorId,
           establishment,
           visitDate,
+          observation,
           JSON.stringify(draftProducts),
           validation.data.beforeImage || null,
           validation.data.afterImage || null,
