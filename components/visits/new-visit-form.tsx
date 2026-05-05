@@ -32,17 +32,11 @@ const productSuggestions = [
   'Licor Paçoca'
 ];
 
-const productsWithIndefiniteExpiration = new Set([
-  'Cajazinha',
-  'Abacaxi Cortelâ',
-  'Tangerina c/ Acerola',
-  'Pomar',
-]);
-
 const packageOptions = ['unidade', 'pack', 'caixa'] as const;
 
 type VisitFormValues = {
   establishment: string;
+  clientId: string;
   date: string;
   beforeImage: string;
   afterImage: string;
@@ -397,20 +391,16 @@ function isCompleteDate(value: string) {
   return /^\d{2}\/\d{2}\/\d{4}$/.test(value.trim());
 }
 
-function hasIndefiniteExpiration(productName: string) {
-  return productsWithIndefiniteExpiration.has(productName.trim());
-}
-
 function shouldSkipExpiration(product: VisitFormValues['products'][number] | undefined) {
   if (!product) {
     return false;
   }
 
-  return hasIndefiniteExpiration(product.name) || Number(product.quantity) <= 0;
+  return Number(product.quantity) <= 0;
 }
 
 function getMissingInformationMessage(data: VisitFormValues) {
-  if (!data.establishment.trim()) {
+  if (!data.establishment.trim() || !data.clientId.trim()) {
     return 'Selecione um estabelecimento antes de enviar a visita.';
   }
 
@@ -422,7 +412,7 @@ function getMissingInformationMessage(data: VisitFormValues) {
     return (
       !product.name.trim() ||
       !Number.isFinite(product.quantity) ||
-      product.quantity < 0 ||
+      product.quantity <= 0 ||
       (!shouldSkipExpiration(product) && !isCompleteDate(product.expirationDate))
     );
   });
@@ -435,8 +425,8 @@ function getMissingInformationMessage(data: VisitFormValues) {
       return `Preencha o nome do produto ${productNumber}.`;
     }
 
-    if (!Number.isFinite(product.quantity) || product.quantity < 0) {
-      return `Informe uma quantidade zero ou maior para o produto ${productNumber}.`;
+    if (!Number.isFinite(product.quantity) || product.quantity <= 0) {
+      return `Informe uma quantidade maior que zero para o produto ${productNumber}.`;
     }
 
     return `Informe a validade do produto ${productNumber} no formato dd/mm/aaaa.`;
@@ -481,6 +471,11 @@ export function NewVisitForm({
   const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
   const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
   const [homePath, setHomePath] = useState('/promotor');
+  const initialClientId =
+    initialClient?.id ??
+    (initialData?.establishment && /^\d+$/.test(initialData.establishment)
+      ? Number(initialData.establishment)
+      : null);
 
   const {
     register,
@@ -493,6 +488,7 @@ export function NewVisitForm({
   } = useForm<VisitFormValues>({
     defaultValues: {
       establishment: initialData?.establishment ?? '',
+      clientId: initialClientId ? String(initialClientId) : '',
       date: initialData?.date ?? formatDateToDisplay(new Date().toISOString().split('T')[0]),
       beforeImage: initialData?.beforeImage ?? '',
       afterImage: initialData?.afterImage ?? '',
@@ -568,6 +564,11 @@ export function NewVisitForm({
       shouldTouch: true,
       shouldValidate: true,
     });
+    setValue('clientId', '', {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
   };
 
   const handleSearchClients = async () => {
@@ -605,6 +606,11 @@ export function NewVisitForm({
       shouldTouch: true,
       shouldValidate: true,
     });
+    setValue('clientId', String(client.id), {
+      shouldDirty: true,
+      shouldTouch: true,
+      shouldValidate: true,
+    });
     setSearchError(null);
   };
 
@@ -627,6 +633,7 @@ export function NewVisitForm({
 
     reset({
       establishment: '',
+      clientId: '',
       date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
       beforeImage: '',
       afterImage: '',
@@ -913,6 +920,11 @@ export function NewVisitForm({
                         shouldTouch: true,
                         shouldValidate: true,
                       });
+                      setValue('clientId', '', {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      });
                     }}
                     className="mt-3 text-xs font-medium text-white underline underline-offset-2"
                   >
@@ -1006,6 +1018,7 @@ export function NewVisitForm({
           <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
             <input type="hidden" {...register('beforeImage')} />
             <input type="hidden" {...register('afterImage')} />
+            <input type="hidden" {...register('clientId')} />
 
             <div className="grid grid-cols-1 gap-3">
               <VisitImageField
@@ -1094,7 +1107,7 @@ export function NewVisitForm({
                   <label className="block text-sm font-medium">Quantidade</label>
                   <input
                     type="number"
-                    min="0"
+                    min="1"
                     placeholder="Qtd"
                     className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-center text-sm outline-none"
                     {...register(`products.${productIndex}.quantity`, {
@@ -1136,13 +1149,9 @@ export function NewVisitForm({
 
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Validade</label>
-                  {hasIndefiniteExpiration(watchedProducts[productIndex]?.name ?? '') ? (
+                  {Number(watchedProducts[productIndex]?.quantity ?? 0) <= 0 ? (
                     <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
-                      Validade indeterminada
-                    </div>
-                  ) : Number(watchedProducts[productIndex]?.quantity ?? 0) <= 0 ? (
-                    <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
-                      Sem validade
+                      Informe uma quantidade maior que zero
                     </div>
                   ) : (
                     <ProductExpirationDateField

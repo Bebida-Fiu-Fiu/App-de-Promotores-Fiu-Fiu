@@ -1,27 +1,13 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
+import { DeleteAgendaEntryButton } from '@/components/agenda/delete-agenda-entry-button';
 import { AppTabs } from '@/components/home/app-tabs';
 import { Header } from '@/components/home/header';
-import { getSession } from '@/lib/auth';
-import { pool } from '@/lib/db';
+import { listPromotorAgendaByPromotorId } from '@/lib/api/promotor';
+import { getPromotorIdFromSession, getSession } from '@/lib/auth';
 import { getHeaderFullName } from '@/lib/header-user';
-
-type AgendaEntry = {
-  id: number;
-  nickname: string | null;
-  notes: string | null;
-  clientId: number;
-  fantasyName: string;
-  clientName: string;
-  document: string;
-  city: string;
-  address: string;
-  addressNumber: string | null;
-  neighborhood: string;
-  state: string;
-  lastVisitDate: string | null;
-};
+import type { PromotorAgendaEntry as AgendaEntry } from '@/types/promotor';
 
 function formatPromotorTitle(fullName: string | null) {
   if (!fullName) {
@@ -98,12 +84,15 @@ function AgendaEntryCard({ entry }: { entry: AgendaEntry }) {
           </div>
         </div>
 
-        <Link
-          href={buildVisitRegistrationHref(entry)}
-          className="inline-flex min-h-10 items-center justify-center rounded-xl bg-[#009c6c] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#009c6c]/80"
-        >
-          Registrar visita
-        </Link>
+        <div className="flex flex-col gap-2 sm:items-end">
+          <Link
+            href={buildVisitRegistrationHref(entry)}
+            className="inline-flex min-h-10 items-center justify-center rounded-xl bg-[#009c6c] px-4 py-2 text-sm font-bold text-white transition hover:bg-[#009c6c]/80"
+          >
+            Registrar visita
+          </Link>
+          <DeleteAgendaEntryButton agendaEntryId={entry.id} />
+        </div>
       </div>
     </article>
   );
@@ -122,7 +111,6 @@ export default async function AgendaPage({
 
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const query = resolvedSearchParams.q?.trim() ?? '';
-  const hasDatabaseConfig = Boolean(process.env.DATABASE_URL?.trim());
 
   let fullName: string | null = session.user.fullName;
   let agendaEntries: AgendaEntry[] = [];
@@ -130,86 +118,38 @@ export default async function AgendaPage({
 
   fullName = await getHeaderFullName(session.accessToken, fullName);
 
-  if (!hasDatabaseConfig) {
-    agendaUnavailableMessage = 'A agenda local ainda nao esta configurada neste ambiente.';
+  const promotorId = getPromotorIdFromSession(session);
+
+  if (typeof promotorId !== 'number') {
+    agendaUnavailableMessage = 'Promotor nao identificado para carregar a agenda.';
   } else {
     try {
-      const client = await pool.connect();
+      const entries = await listPromotorAgendaByPromotorId(session.accessToken, promotorId);
 
-      try {
-        const values: string[] = [session.user.email];
-        const filters: string[] = ['p.email = $1'];
+      agendaEntries = query
+        ? entries.filter((entry) => {
+            const normalizedQuery = query.toLocaleLowerCase('pt-BR');
+            const haystack = [
+              entry.nickname,
+              entry.clientName,
+              entry.fantasyName,
+              entry.notes,
+              entry.city,
+              entry.state,
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLocaleLowerCase('pt-BR');
 
-        if (query) {
-          values.push(`%${query}%`);
-          filters.push(
-            `(c.fantasy_name ILIKE $${values.length} OR c.client_name ILIKE $${values.length} OR a.nickname ILIKE $${values.length} OR a.notes ILIKE $${values.length})`
-          );
-        }
+            return haystack.includes(normalizedQuery);
+          })
+        : entries;
 
-        const whereClause = `WHERE ${filters.join(' AND ')}`;
-
-        const [userResult, agendaResult] = await Promise.all([
-          client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.user.email]),
-          client.query(
-            `SELECT
-               a.id,
-               a.nickname,
-               a.notes,
-               c.id AS client_id,
-               c.fantasy_name,
-               c.client_name,
-               c.document,
-               c.city,
-               c.address,
-               c.address_number,
-               c.neighborhood,
-               c.state,
-               latest_visit.visit_date AS last_visit_date
-             FROM promotor_client_agenda a
-             INNER JOIN promotors p ON p.id = a.promotor_id
-             INNER JOIN clients c ON c.id = a.client_id
-             LEFT JOIN LATERAL (
-               SELECT v.visit_date
-               FROM visits v
-               WHERE v.promotor_id = p.id
-                 AND (
-                   v.establishment = coalesce(a.nickname, '')
-                   OR v.establishment = c.fantasy_name
-                   OR v.establishment = c.client_name
-                 )
-               ORDER BY v.visit_date DESC, v.id DESC
-               LIMIT 1
-             ) latest_visit ON TRUE
-             ${whereClause}
-             ORDER BY
-               coalesce(nullif(a.nickname, ''), nullif(c.fantasy_name, ''), c.client_name) ASC,
-               a.created_at DESC`,
-            values
-          ),
-        ]);
-
-        fullName = userResult.rows[0]?.full_name ?? fullName;
-        agendaEntries = agendaResult.rows.map((row) => ({
-          id: Number(row.id),
-          nickname: row.nickname ?? null,
-          notes: row.notes,
-          clientId: Number(row.client_id),
-          fantasyName: row.fantasy_name ?? '',
-          clientName: row.client_name ?? '',
-          document: row.document ?? '',
-          city: row.city ?? '',
-          address: row.address ?? '',
-          addressNumber: row.address_number ?? null,
-          neighborhood: row.neighborhood ?? '',
-          state: row.state ?? '',
-          lastVisitDate: row.last_visit_date ?? null,
-        }));
-      } finally {
-        client.release();
+      if (!fullName) {
+        fullName = entries[0]?.promotorName ?? fullName;
       }
     } catch (error) {
-      agendaUnavailableMessage = 'Nao foi possivel carregar a agenda local neste ambiente.';
+      agendaUnavailableMessage = 'Nao foi possivel carregar a agenda da API neste ambiente.';
       console.error('Agenda lookup error:', error);
     }
   }

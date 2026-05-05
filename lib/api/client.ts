@@ -1,4 +1,5 @@
 import 'server-only';
+import { inspect } from 'node:util';
 
 type PrimitiveRecord = Record<string, unknown>;
 
@@ -73,6 +74,15 @@ function extractErrorMessage(payload: unknown, fallbackMessage: string) {
     : fallbackMessage;
 }
 
+function formatLogValue(value: unknown) {
+  return inspect(value, {
+    depth: null,
+    colors: false,
+    compact: false,
+    breakLength: 120,
+  });
+}
+
 type ApiRequestOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   token?: string;
@@ -106,7 +116,7 @@ export async function apiRequestWithMeta<T>(path: string, options: ApiRequestOpt
     method: options.method ?? 'GET',
     url,
     headers: Object.fromEntries(headers.entries()),
-    body: options.body ?? null,
+    body: formatLogValue(options.body ?? null),
   });
 
   const response = await fetch(url, {
@@ -125,7 +135,7 @@ export async function apiRequestWithMeta<T>(path: string, options: ApiRequestOpt
     status: response.status,
     ok: response.ok,
     headers: Object.fromEntries(response.headers.entries()),
-    body: payload,
+    body: formatLogValue(payload),
   });
 
   if (!response.ok) {

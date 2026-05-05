@@ -29,6 +29,27 @@ export type PromotorMileageRecord = {
   updatedAt: string | null;
 };
 
+export type PromotorAgendaEntry = {
+  id: number;
+  promotorId: number | null;
+  promotorName: string | null;
+  promotorEmail: string | null;
+  clientId: number;
+  clientName: string;
+  fantasyName: string;
+  city: string;
+  state: string;
+  nickname: string | null;
+  notes: string | null;
+  document: string;
+  address: string;
+  addressNumber: string | null;
+  neighborhood: string;
+  lastVisitDate: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
 export type PromotorProfile = {
   id: number | null;
   email: string;
@@ -37,7 +58,7 @@ export type PromotorProfile = {
 };
 
 export type PromotorVisitPayload = {
-  establishment: string;
+  establishment: number;
   date: string;
   products: PromotorVisitProduct[];
   beforeImage?: string;

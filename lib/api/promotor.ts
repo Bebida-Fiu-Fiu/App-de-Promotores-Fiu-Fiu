@@ -2,6 +2,7 @@ import 'server-only';
 
 import type { SessionUser } from '@/types/auth';
 import type {
+  PromotorAgendaEntry,
   PromotorMileageRecord,
   PromotorProfile,
   PromotorVisit,
@@ -231,11 +232,15 @@ function normalizeVisitProduct(payload: unknown): PromotorVisitProduct {
 
 function normalizeVisit(payload: unknown): PromotorVisit {
   const record = isRecord(payload) ? payload : {};
+  const rawEstablishment = record.establishment;
 
   return {
     id: toNumber(record.id),
     promotorId: toNullableNumber(record.promotorId ?? record.promotor_id),
-    establishment: toStringValue(record.establishment, 'Rascunho sem estabelecimento'),
+    establishment:
+      typeof rawEstablishment === 'number'
+        ? String(rawEstablishment)
+        : toStringValue(rawEstablishment, 'Rascunho sem estabelecimento'),
     visitDate: toNullableString(record.visitDate ?? record.visit_date ?? record.date),
     products: Array.isArray(record.products) ? record.products.map(normalizeVisitProduct) : [],
     beforeImage: toStringValue(record.beforeImage ?? record.before_image),
@@ -274,6 +279,31 @@ function normalizeMileageRecord(payload: unknown): PromotorMileageRecord {
     mileage: toNumber(record.mileage),
     checkDate,
     imageUrl: toNullableString(record.imageUrl ?? record.image_url ?? record.image),
+    createdAt: toNullableString(record.createdAt ?? record.created_at),
+    updatedAt: toNullableString(record.updatedAt ?? record.updated_at),
+  };
+}
+
+function normalizeAgendaEntry(payload: unknown): PromotorAgendaEntry {
+  const record = isRecord(payload) ? payload : {};
+
+  return {
+    id: toNumber(record.id),
+    promotorId: toNullableNumber(record.promotorId ?? record.promotor_id),
+    promotorName: toNullableString(record.promotorName ?? record.promotor_name),
+    promotorEmail: toNullableString(record.promotorEmail ?? record.promotor_email),
+    clientId: toNumber(record.clientId ?? record.client_id),
+    clientName: toStringValue(record.clientName ?? record.client_name),
+    fantasyName: toStringValue(record.fantasyName ?? record.fantasy_name),
+    city: toStringValue(record.city),
+    state: toStringValue(record.state),
+    nickname: toNullableString(record.nickname),
+    notes: toNullableString(record.notes),
+    document: toStringValue(record.document),
+    address: toStringValue(record.address),
+    addressNumber: toNullableString(record.addressNumber ?? record.address_number),
+    neighborhood: toStringValue(record.neighborhood),
+    lastVisitDate: toNullableString(record.lastVisitDate ?? record.last_visit_date),
     createdAt: toNullableString(record.createdAt ?? record.created_at),
     updatedAt: toNullableString(record.updatedAt ?? record.updated_at),
   };
@@ -328,6 +358,23 @@ export async function listAllPromotorVisits(token: string) {
   });
 
   return readArrayPayload(response, ['visits', 'data', 'items']).map(normalizeVisit);
+}
+
+export async function listPromotorAgendaByPromotorId(token: string, promotorId: number) {
+  const response = await apiRequest(`/promotors/agenda/${promotorId}`, {
+    token,
+  });
+
+  return readArrayPayload(response, ['agendas', 'agenda', 'data', 'items']).map(normalizeAgendaEntry);
+}
+
+export async function deletePromotorAgendaEntry(token: string, agendaEntryId: number) {
+  await apiRequest(`/promotor/agenda/${agendaEntryId}`, {
+    method: 'DELETE',
+    token,
+  });
+
+  return true;
 }
 
 export async function createPromotorVisit(token: string, payload: PromotorVisitPayload) {

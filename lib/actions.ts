@@ -8,6 +8,7 @@ import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
 import { ApiError } from '@/lib/api/client';
 import {
   createPromotorMileage,
+  deletePromotorAgendaEntry,
   createPromotorVisit,
   getPromotorMe,
   signInPromotor,
@@ -30,27 +31,12 @@ const signupSchema = loginSchema.extend({
   path: ['confirmPassword'],
 });
 
-const productsWithIndefiniteExpiration = new Set([
-  'Cajazinha',
-  'Abacaxi Cortelâ',
-  'Tangerina c/ Acerola',
-  'Pomar',
-]);
-
-function productHasIndefiniteExpiration(name: string) {
-  return productsWithIndefiniteExpiration.has(name.trim());
-}
-
 const visitProductSchema = z.object({
   name: z.string().min(1),
-  quantity: z.number().min(0),
+  quantity: z.number().positive(),
   packageType: z.enum(['unidade', 'pack', 'caixa']),
   expirationDate: z.string(),
 }).superRefine((product, ctx) => {
-  if (productHasIndefiniteExpiration(product.name) || product.quantity <= 0) {
-    return;
-  }
-
   if (!/^\d{2}\/\d{2}\/\d{4}$/.test(product.expirationDate)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -62,6 +48,7 @@ const visitProductSchema = z.object({
 
 const visitSchema = z.object({
   establishment: z.string().min(1),
+  clientId: z.string().trim().min(1),
   date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
   products: z.array(visitProductSchema).min(1),
   beforeImage: z.string().trim().optional().default(''),
@@ -70,6 +57,7 @@ const visitSchema = z.object({
 
 const visitDraftSchema = z.object({
   establishment: z.string().trim().optional().default(''),
+  clientId: z.string().trim().optional().default(''),
   date: z.string().trim().optional().default(''),
   products: z.array(
     z.object({
@@ -207,18 +195,20 @@ function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['prod
   return products
     .filter((product) => {
       return (
-        product.name.trim() ||
-        Number(product.quantity) > 0 ||
-        product.expirationDate.trim()
+        product.name.trim() &&
+        Number(product.quantity) > 0 &&
+        /^\d{2}\/\d{2}\/\d{4}$/.test(product.expirationDate.trim())
       );
     })
     .map((product) => ({
       name: product.name.trim(),
       quantity: Number(product.quantity) || 0,
       unit: product.packageType,
-      expirationDate: product.expirationDate.trim(),
+      expirationDate: parseDisplayDateToDatabase(product.expirationDate.trim()) ?? product.expirationDate.trim(),
     }));
 }
+
+const EMPTY_IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
 export async function login(data: z.infer<typeof loginSchema>) {
   const validation = loginSchema.safeParse(data);
@@ -546,6 +536,32 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
   }
 }
 
+export async function removeAgendaEntry(agendaEntryId: number) {
+  const session = await getSession();
+
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  if (!Number.isFinite(agendaEntryId) || agendaEntryId <= 0) {
+    return { success: false, error: 'Cliente da agenda invalido.' };
+  }
+
+  try {
+    await deletePromotorAgendaEntry(session.accessToken, agendaEntryId);
+
+    revalidatePath('/agenda');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Delete agenda entry API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel excluir o cliente da agenda.' };
+    }
+    return { success: false, error: 'Nao foi possivel excluir o cliente da agenda.' };
+  }
+}
+
 export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: number) {
   const session = await getSession();
 
@@ -566,27 +582,27 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
   }
 
   const products = validation.data.products.map((product) => {
-    const expirationDate = productHasIndefiniteExpiration(product.name)
-      ? 'indeterminado'
-      : product.quantity <= 0
-        ? ''
-        : parseDisplayDateToDatabase(product.expirationDate);
-
     return {
       name: product.name,
       quantity: product.quantity,
       unit: product.packageType,
-      expirationDate: expirationDate ?? product.expirationDate,
+      expirationDate: parseDisplayDateToDatabase(product.expirationDate) ?? product.expirationDate,
     };
   });
 
+  const establishmentId = Number(validation.data.clientId);
+
+  if (!Number.isFinite(establishmentId) || establishmentId <= 0) {
+    return { success: false, error: 'Selecione um estabelecimento valido antes de enviar a visita.' };
+  }
+
   try {
     const payload = {
-      establishment: validation.data.establishment,
+      establishment: establishmentId,
       date: visitDate,
       products,
-      beforeImage: validation.data.beforeImage || '',
-      afterImage: validation.data.afterImage || '',
+      beforeImage: validation.data.beforeImage || EMPTY_IMAGE_PLACEHOLDER,
+      afterImage: validation.data.afterImage || EMPTY_IMAGE_PLACEHOLDER,
       isDraft: false,
     };
 
@@ -629,19 +645,23 @@ export async function saveVisitDraft(
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 
-  const establishment = validation.data.establishment.trim() || '';
+  const establishmentId = Number(validation.data.clientId);
   const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
     ? parseDisplayDateToDatabase(validation.data.date)
     : null;
   const draftProducts = normalizeDraftProducts(validation.data.products);
 
+  if (!Number.isFinite(establishmentId) || establishmentId <= 0) {
+    return { success: false, error: 'Selecione um estabelecimento valido antes de salvar o rascunho.' };
+  }
+
   try {
     const payload = {
-      establishment,
+      establishment: establishmentId,
       date: visitDate ?? '',
       products: draftProducts,
-      beforeImage: validation.data.beforeImage || '',
-      afterImage: validation.data.afterImage || '',
+      beforeImage: validation.data.beforeImage || EMPTY_IMAGE_PLACEHOLDER,
+      afterImage: validation.data.afterImage || EMPTY_IMAGE_PLACEHOLDER,
       isDraft: true,
     };
 
