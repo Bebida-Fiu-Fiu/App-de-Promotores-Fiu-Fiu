@@ -9,7 +9,7 @@ import { pool } from '@/lib/db';
 type EditableVisitProduct = {
   name: string;
   quantity: number;
-  packageType: 'unidade' | 'pack' | 'caixa';
+  packageType: 'unidade' | 'pack';
   expirationDate: string;
 };
 
@@ -32,6 +32,14 @@ function formatDatabaseDateToDisplay(value: string | Date | null) {
   }
 
   return date.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+}
+
+function getPackageTypeForProduct(productName: string, unit?: string): EditableVisitProduct['packageType'] {
+  if (unit === 'pack') {
+    return 'pack';
+  }
+
+  return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
 }
 
 export default async function EditVisitPage({
@@ -87,8 +95,7 @@ export default async function EditVisitPage({
             ? (row.products as StoredVisitProduct[]).map((product) => ({
                 name: product.name ?? '',
                 quantity: Number(product.quantity ?? 0),
-                packageType:
-                  product.unit === 'pack' || product.unit === 'caixa' ? product.unit : 'unidade',
+                packageType: getPackageTypeForProduct(product.name ?? '', product.unit),
                 expirationDate: product.expirationDate ?? '',
               }))
             : [
