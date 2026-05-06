@@ -39,7 +39,11 @@ const productsWithIndefiniteExpiration = new Set([
   'Pomar',
 ]);
 
-const packageOptions = ['unidade', 'pack', 'caixa'] as const;
+type PackageType = 'unidade' | 'pack';
+
+function getDefaultPackageType(productName: string): PackageType {
+  return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
+}
 
 type VisitFormValues = {
   establishment: string;
@@ -50,7 +54,7 @@ type VisitFormValues = {
   products: {
     name: string;
     quantity: number;
-    packageType: (typeof packageOptions)[number];
+    packageType: PackageType;
     expirationDate: string;
   }[];
 };
@@ -1073,6 +1077,11 @@ export function NewVisitForm({
                         shouldTouch: true,
                         shouldValidate: true,
                       });
+                      setValue(`products.${productIndex}.packageType`, getDefaultPackageType(value), {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      });
                     }}
                   />
                 </div>
@@ -1134,22 +1143,10 @@ export function NewVisitForm({
 
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Unidade de medida</label>
-                  <select
-                    className="h-8 w-full rounded-md border border-[#707070] bg-[#355061] px-2 text-sm text-white outline-none"
-                    {...register(`products.${productIndex}.packageType`, {
-                      onChange: () => setFormError(null),
-                    })}
-                  >
-                    {packageOptions.map((option) => (
-                      <option
-                        key={option}
-                        value={option}
-                        className="bg-[#0c2432] text-white"
-                      >
-                        {option}
-                      </option>
-                    ))}
-                  </select>
+                  <input type="hidden" {...register(`products.${productIndex}.packageType`)} />
+                  <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
+                    {watchedProducts[productIndex]?.packageType ?? 'unidade'}
+                  </div>
                 </div>
 
                 <div className="space-y-1">
