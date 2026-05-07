@@ -19,6 +19,7 @@ const productSuggestions = [
   'Abacaxi Cortelâ',
   'Tangerina c/ Acerola',
   'Pomar',
+  'Pitaya com Melancia',
   'ICE Cajalemon',
   'ICE Chicletin',
   'ICE Limonada Rosa',
@@ -29,7 +30,7 @@ const productSuggestions = [
   'Licor Brigadeiro',
   'Licor Churros',
   'Licor Tortinha de Limão',
-  'Licor Paçoca'
+  'Licor Paçoca',
 ];
 
 const productsWithIndefiniteExpiration = new Set([
@@ -37,6 +38,7 @@ const productsWithIndefiniteExpiration = new Set([
   'Abacaxi Cortelâ',
   'Tangerina c/ Acerola',
   'Pomar',
+  'Pitaya com Melancia'
 ]);
 
 type PackageType = 'unidade' | 'pack';
