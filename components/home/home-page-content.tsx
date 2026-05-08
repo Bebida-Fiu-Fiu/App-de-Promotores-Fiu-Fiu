@@ -2,7 +2,7 @@ import { Header } from '@/components/home/header';
 import { AppTabs } from '@/components/home/app-tabs';
 import { VisitList } from '@/components/home/visitList';
 import { type SessionUser } from '@/types/auth';
-import { listPromotorVisitsByPromotorId } from '@/lib/api/promotor';
+import { listVisitsReportByPromotorId } from '@/lib/api/promotor';
 import { getPromotorIdFromSession } from '@/lib/auth';
 import { getHeaderFullName } from '@/lib/header-user';
 
@@ -17,6 +17,7 @@ type VisitListItem = {
 type HomePageContentProps = {
   accessToken: string;
   user: SessionUser;
+  page: number;
 };
 
 function formatDatabaseDateToDisplay(value: string | Date) {
@@ -33,9 +34,11 @@ function getRoleLabel(role: SessionUser['role']) {
   return role === 'comercial' ? 'Comercial' : 'Promotor';
 }
 
-export async function HomePageContent({ accessToken, user }: HomePageContentProps) {
+export async function HomePageContent({ accessToken, user, page }: HomePageContentProps) {
   let visits: VisitListItem[] = [];
   let fullName: string | null = user.fullName;
+  let hasNextPage = false;
+  let totalVisits: number | null = null;
 
   try {
     fullName = await getHeaderFullName(accessToken, user.fullName);
@@ -45,7 +48,13 @@ export async function HomePageContent({ accessToken, user }: HomePageContentProp
     });
 
     if (typeof promotorId === 'number') {
-      const promotorVisits = await listPromotorVisitsByPromotorId(accessToken, promotorId);
+      const visitsReport = await listVisitsReportByPromotorId(accessToken, promotorId, {
+        page,
+        pageSize: 10,
+      });
+      const promotorVisits = visitsReport.items;
+      hasNextPage = visitsReport.hasNextPage;
+      totalVisits = visitsReport.total;
 
       visits = promotorVisits.map((visit) => ({
         id: visit.id,
@@ -68,7 +77,7 @@ export async function HomePageContent({ accessToken, user }: HomePageContentProp
           Home {getRoleLabel(user.role)}
         </p>
       </section>
-      <VisitList visits={visits} />
+      <VisitList visits={visits} page={page} hasNextPage={hasNextPage} totalVisits={totalVisits} pageSize={10} />
     </main>
   );
 }

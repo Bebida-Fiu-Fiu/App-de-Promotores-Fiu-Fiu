@@ -31,16 +31,61 @@ const signupSchema = loginSchema.extend({
   path: ['confirmPassword'],
 });
 
+function parseDisplayDateParts(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(trimmedValue)) {
+    return null;
+  }
+
+  const [day, month, year] = trimmedValue.split('/').map(Number);
+
+  if (!day || !month || !year) {
+    return null;
+  }
+
+  const date = new Date(year, month - 1, day);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return { day, month, year };
+}
+
+function isTodayOrFutureDisplayDate(value: string) {
+  const parts = parseDisplayDateParts(value);
+
+  if (!parts) {
+    return false;
+  }
+
+  const date = new Date(parts.year, parts.month - 1, parts.day);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
+
+  return date.getTime() >= today.getTime();
+}
+
 const visitProductSchema = z.object({
   name: z.string().min(1),
-  quantity: z.number().positive(),
+  quantity: z.number().min(0),
   packageType: z.enum(['unidade', 'pack', 'caixa']),
   expirationDate: z.string(),
 }).superRefine((product, ctx) => {
-  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(product.expirationDate)) {
+  if (product.quantity === 0) {
+    return;
+  }
+
+  if (!isTodayOrFutureDisplayDate(product.expirationDate)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Data de validade invalida.',
+      message: 'Data de validade invalida ou anterior a hoje.',
       path: ['expirationDate'],
     });
   }
@@ -122,13 +167,13 @@ const commercialSubmissionUpdateSchema = commercialSubmissionSchema.extend({
 });
 
 function parseDisplayDateToDatabase(value: string) {
-  const [day, month, year] = value.split('/');
+  const parts = parseDisplayDateParts(value);
 
-  if (!day || !month || !year) {
+  if (!parts) {
     return null;
   }
 
-  return `${year}-${month}-${day}`;
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 }
 
 function normalizeDigits(value: string) {
@@ -196,8 +241,12 @@ function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['prod
     .filter((product) => {
       return (
         product.name.trim() &&
-        Number(product.quantity) > 0 &&
-        /^\d{2}\/\d{2}\/\d{4}$/.test(product.expirationDate.trim())
+        Number.isFinite(Number(product.quantity)) &&
+        Number(product.quantity) >= 0 &&
+        (
+          Number(product.quantity) === 0 ||
+          isTodayOrFutureDisplayDate(product.expirationDate.trim())
+        )
       );
     })
     .map((product) => ({
@@ -591,6 +640,7 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
   });
 
   const establishmentId = Number(validation.data.clientId);
+  const establishmentName = validation.data.establishment.trim();
 
   if (!Number.isFinite(establishmentId) || establishmentId <= 0) {
     return { success: false, error: 'Selecione um estabelecimento valido antes de enviar a visita.' };
@@ -599,6 +649,7 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
   try {
     const payload = {
       establishment: establishmentId,
+      establishmentName: establishmentName || undefined,
       date: visitDate,
       products,
       beforeImage: validation.data.beforeImage || EMPTY_IMAGE_PLACEHOLDER,
@@ -646,6 +697,7 @@ export async function saveVisitDraft(
   }
 
   const establishmentId = Number(validation.data.clientId);
+  const establishmentName = validation.data.establishment.trim();
   const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
     ? parseDisplayDateToDatabase(validation.data.date)
     : null;
@@ -658,6 +710,7 @@ export async function saveVisitDraft(
   try {
     const payload = {
       establishment: establishmentId,
+      establishmentName: establishmentName || undefined,
       date: visitDate ?? '',
       products: draftProducts,
       beforeImage: validation.data.beforeImage || EMPTY_IMAGE_PLACEHOLDER,

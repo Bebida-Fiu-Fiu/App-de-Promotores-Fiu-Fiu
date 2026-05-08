@@ -28,6 +28,31 @@ function getApiBaseUrl() {
   return baseUrl.replace(/\/+$/, '');
 }
 
+function tryParseJsonLikeText(text: string) {
+  const trimmedText = text.trim();
+
+  if (
+    (!trimmedText.startsWith('{') || !trimmedText.endsWith('}')) &&
+    (!trimmedText.startsWith('[') || !trimmedText.endsWith(']'))
+  ) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(trimmedText);
+  } catch {
+    const normalizedText = trimmedText
+      .replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)(\s*:)/g, '$1"$2"$3')
+      .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, value: string) => JSON.stringify(value));
+
+    try {
+      return JSON.parse(normalizedText);
+    } catch {
+      return null;
+    }
+  }
+}
+
 async function parseResponseBody(response: Response) {
   const contentType = response.headers.get('content-type') ?? '';
 
@@ -43,15 +68,10 @@ async function parseResponseBody(response: Response) {
 
   const trimmedText = text.trim();
 
-  if (
-    (trimmedText.startsWith('{') && trimmedText.endsWith('}')) ||
-    (trimmedText.startsWith('[') && trimmedText.endsWith(']'))
-  ) {
-    try {
-      return JSON.parse(trimmedText);
-    } catch {
-      return { message: text };
-    }
+  const parsedJsonLikeText = tryParseJsonLikeText(trimmedText);
+
+  if (parsedJsonLikeText !== null) {
+    return parsedJsonLikeText;
   }
 
   return { message: text };

@@ -5,6 +5,7 @@ import type {
   PromotorAgendaEntry,
   PromotorMileageRecord,
   PromotorProfile,
+  PromotorVisitListPage,
   PromotorVisit,
   PromotorVisitPayload,
   PromotorVisitProduct,
@@ -232,7 +233,14 @@ function normalizeVisitProduct(payload: unknown): PromotorVisitProduct {
 
 function normalizeVisit(payload: unknown): PromotorVisit {
   const record = isRecord(payload) ? payload : {};
-  const rawEstablishment = record.establishment;
+  const rawEstablishment =
+    record.establishmentName ??
+    record.establishment_name ??
+    record.clientName ??
+    record.client_name ??
+    record.fantasyName ??
+    record.fantasy_name ??
+    record.establishment;
 
   return {
     id: toNumber(record.id),
@@ -254,6 +262,81 @@ function normalizeVisit(payload: unknown): PromotorVisit {
           : true,
     createdAt: toNullableString(record.createdAt ?? record.created_at),
     updatedAt: toNullableString(record.updatedAt ?? record.updated_at),
+  };
+}
+
+function normalizeVisitReportPage(payload: unknown, fallbackPage: number, fallbackPageSize: number): PromotorVisitListPage {
+  if (Array.isArray(payload)) {
+    return {
+      items: payload.map(normalizeVisit),
+      page: fallbackPage,
+      pageSize: fallbackPageSize,
+      total: null,
+      hasNextPage: payload.length === fallbackPageSize,
+    };
+  }
+
+  const record = isRecord(payload) ? payload : {};
+  const pagination = isRecord(record.pagination) ? record.pagination : {};
+  const items = readArrayPayload(record, [
+    'reports',
+    'visits',
+    'items',
+    'data',
+    'results',
+    'rows',
+    'report',
+  ]).map(normalizeVisit);
+  const total = toNullableNumber(
+    pagination.total ??
+    record.total ??
+    record.count ??
+    record.totalItems ??
+    record.total_items ??
+    record.totalCount ??
+    record.total_count
+  );
+  const page = toNumber(
+    pagination.page ??
+    record.page ??
+    record.currentPage ??
+    record.current_page,
+    fallbackPage
+  );
+  const pageSize = toNumber(
+    pagination.pageSize ??
+    pagination.limit ??
+    record.limit ??
+    record.pageSize ??
+    record.page_size ??
+    record.perPage ??
+    record.per_page,
+    fallbackPageSize
+  );
+  const totalPages = toNullableNumber(
+    pagination.totalPages ??
+    pagination.total_pages ??
+    record.totalPages ??
+    record.total_pages ??
+    record.pages
+  );
+  const hasNextPage =
+    typeof record.hasNextPage === 'boolean'
+      ? record.hasNextPage
+      : typeof record.has_next_page === 'boolean'
+        ? record.has_next_page
+        : totalPages !== null
+          ? page < totalPages
+          : total !== null
+            ? page * pageSize < total
+            : items.length === pageSize;
+
+  return {
+    items,
+    page,
+    pageSize,
+    total,
+    hasNextPage,
   };
 }
 
@@ -350,6 +433,41 @@ export async function listPromotorVisitsByPromotorId(token: string, promotorId: 
   });
 
   return readArrayPayload(response, ['visits', 'data', 'items']).map(normalizeVisit);
+}
+
+export async function getVisitById(token: string, visitId: number) {
+  const response = await apiRequest(`/visits/${visitId}`, {
+    token,
+  });
+
+  if (!isRecord(response)) {
+    return null;
+  }
+
+  const source = readNestedRecord(response, ['visit', 'data', 'report']) ?? response;
+  return normalizeVisit(source);
+}
+
+export async function listVisitsReportByPromotorId(
+  token: string,
+  promotorId: number,
+  options?: {
+    page?: number;
+    pageSize?: number;
+  }
+) {
+  const page = options?.page && options.page > 0 ? options.page : 1;
+  const pageSize = options?.pageSize && options.pageSize > 0 ? options.pageSize : 10;
+  const searchParams = new URLSearchParams({
+    promotorId: String(promotorId),
+    page: String(page),
+    limit: String(pageSize),
+  });
+  const response = await apiRequest(`/visits/report?${searchParams.toString()}`, {
+    token,
+  });
+
+  return normalizeVisitReportPage(response, page, pageSize);
 }
 
 export async function listAllPromotorVisits(token: string) {

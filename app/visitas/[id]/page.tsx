@@ -4,8 +4,8 @@ import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
-import { getHomePath, getPromotorIdFromSession, getSession } from '@/lib/auth';
-import { listPromotorVisitsByPromotorId } from '@/lib/api/promotor';
+import { getHomePath, getSession } from '@/lib/auth';
+import { getVisitById } from '@/lib/api/promotor';
 import { getHeaderFullName } from '@/lib/header-user';
 
 type VisitProduct = {
@@ -57,23 +57,18 @@ export default async function VisitDetailsPage({
     | null = null;
 
   try {
-    const promotorId = getPromotorIdFromSession(session);
+    const currentVisit = await getVisitById(session.accessToken, Number(id));
 
-    if (typeof promotorId === 'number') {
-      const visits = await listPromotorVisitsByPromotorId(session.accessToken, promotorId);
-      const currentVisit = visits.find((entry) => entry.id === Number(id));
-
-      if (currentVisit) {
-        visit = {
-          establishment: currentVisit.establishment ?? 'Rascunho sem estabelecimento',
-          visitDate: formatDatabaseDateToDisplay(currentVisit.visitDate),
-          products: currentVisit.products,
-          beforeImage: currentVisit.beforeImage ?? '',
-          afterImage: currentVisit.afterImage ?? '',
-          isDraft: Boolean(currentVisit.isDraft),
-          canEdit: currentVisit.canEdit,
-        };
-      }
+    if (currentVisit) {
+      visit = {
+        establishment: currentVisit.establishment ?? 'Rascunho sem estabelecimento',
+        visitDate: formatDatabaseDateToDisplay(currentVisit.visitDate),
+        products: currentVisit.products,
+        beforeImage: currentVisit.beforeImage ?? '',
+        afterImage: currentVisit.afterImage ?? '',
+        isDraft: Boolean(currentVisit.isDraft),
+        canEdit: currentVisit.canEdit,
+      };
     }
   } catch (error) {
     console.error('Visit details API lookup error:', error);

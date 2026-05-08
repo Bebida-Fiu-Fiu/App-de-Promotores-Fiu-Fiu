@@ -32,7 +32,7 @@ const productSuggestions = [
   'Licor Paçoca'
 ];
 
-const packageOptions = ['unidade', 'pack', 'caixa'] as const;
+type PackageType = 'unidade' | 'pack';
 
 type VisitFormValues = {
   establishment: string;
@@ -43,7 +43,7 @@ type VisitFormValues = {
   products: {
     name: string;
     quantity: number;
-    packageType: (typeof packageOptions)[number];
+    packageType: PackageType;
     expirationDate: string;
   }[];
 };
@@ -87,6 +87,15 @@ function formatDateToDisplay(value: string) {
   }
 
   return `${day}/${month}/${year}`;
+}
+
+function getTodayIsoDate() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+
+  return `${year}-${month}-${day}`;
 }
 
 async function readFileAsDataUrl(file: File) {
@@ -276,6 +285,7 @@ function ProductExpirationDateField({
         ref={expirationPickerRef}
         type="date"
         className="sr-only"
+        min={getTodayIsoDate()}
         onChange={(event) => onChange(formatDateToDisplay(event.target.value))}
       />
     </div>
@@ -391,6 +401,57 @@ function isCompleteDate(value: string) {
   return /^\d{2}\/\d{2}\/\d{4}$/.test(value.trim());
 }
 
+function parseDisplayDate(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!isCompleteDate(trimmedValue)) {
+    return null;
+  }
+
+  const [day, month, year] = trimmedValue.split('/').map(Number);
+
+  if (!day || !month || !year) {
+    return null;
+  }
+
+  const date = new Date(year, month - 1, day);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+function isTodayOrFutureDate(value: string) {
+  const date = parseDisplayDate(value);
+
+  if (!date) {
+    return false;
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  date.setHours(0, 0, 0, 0);
+
+  return date.getTime() >= today.getTime();
+}
+
+function getPackageTypeByProductName(productName: string): PackageType {
+  return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
+}
+
+function normalizeProductsPackageType(products: VisitFormValues['products']) {
+  return products.map((product) => ({
+    ...product,
+    packageType: getPackageTypeByProductName(product.name),
+  }));
+}
+
 function shouldSkipExpiration(product: VisitFormValues['products'][number] | undefined) {
   if (!product) {
     return false;
@@ -412,8 +473,8 @@ function getMissingInformationMessage(data: VisitFormValues) {
     return (
       !product.name.trim() ||
       !Number.isFinite(product.quantity) ||
-      product.quantity <= 0 ||
-      (!shouldSkipExpiration(product) && !isCompleteDate(product.expirationDate))
+      product.quantity < 0 ||
+      (!shouldSkipExpiration(product) && !isTodayOrFutureDate(product.expirationDate))
     );
   });
 
@@ -425,11 +486,11 @@ function getMissingInformationMessage(data: VisitFormValues) {
       return `Preencha o nome do produto ${productNumber}.`;
     }
 
-    if (!Number.isFinite(product.quantity) || product.quantity <= 0) {
-      return `Informe uma quantidade maior que zero para o produto ${productNumber}.`;
+    if (!Number.isFinite(product.quantity) || product.quantity < 0) {
+      return `Informe uma quantidade valida para o produto ${productNumber}.`;
     }
 
-    return `Informe a validade do produto ${productNumber} no formato dd/mm/aaaa.`;
+    return `Informe uma validade valida e igual ou maior que hoje para o produto ${productNumber}.`;
   }
 
   return null;
@@ -615,7 +676,11 @@ export function NewVisitForm({
   };
 
   const onSubmit = async (data: VisitFormValues) => {
-    const missingInformationMessage = getMissingInformationMessage(data);
+    const normalizedData = {
+      ...data,
+      products: normalizeProductsPackageType(data.products),
+    };
+    const missingInformationMessage = getMissingInformationMessage(normalizedData);
 
     if (missingInformationMessage) {
       setFormError(missingInformationMessage);
@@ -623,7 +688,7 @@ export function NewVisitForm({
     }
 
     setFormError(null);
-    const result = await createVisit(data, visitId);
+    const result = await createVisit(normalizedData, visitId);
 
     if (!result.success) {
       setModalMode('error');
@@ -667,8 +732,13 @@ export function NewVisitForm({
 
   const handleSaveDraft = async () => {
     setFormError(null);
+    const currentValues = getValues();
+    const normalizedData = {
+      ...currentValues,
+      products: normalizeProductsPackageType(currentValues.products),
+    };
 
-    const result = await saveVisitDraft(getValues(), visitId);
+    const result = await saveVisitDraft(normalizedData, visitId);
 
     if (!result.success) {
       setModalMode('error');
@@ -1059,11 +1129,17 @@ export function NewVisitForm({
                 <div className="flex-1 space-y-1">
                   <label className="block text-sm font-medium">Produto</label>
                   <input type="hidden" {...register(`products.${productIndex}.name`)} />
+                  <input type="hidden" {...register(`products.${productIndex}.packageType`)} />
                   <ProductSelectField
                     value={watchedProducts[productIndex]?.name ?? ''}
                     onChange={(value) => {
                       setFormError(null);
                       setValue(`products.${productIndex}.name`, value, {
+                        shouldDirty: true,
+                        shouldTouch: true,
+                        shouldValidate: true,
+                      });
+                      setValue(`products.${productIndex}.packageType`, getPackageTypeByProductName(value), {
                         shouldDirty: true,
                         shouldTouch: true,
                         shouldValidate: true,
@@ -1107,7 +1183,7 @@ export function NewVisitForm({
                   <label className="block text-sm font-medium">Quantidade</label>
                   <input
                     type="number"
-                    min="1"
+                    min="0"
                     placeholder="Qtd"
                     className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-center text-sm outline-none"
                     {...register(`products.${productIndex}.quantity`, {
@@ -1129,29 +1205,16 @@ export function NewVisitForm({
 
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Unidade de medida</label>
-                  <select
-                    className="h-8 w-full rounded-md border border-[#707070] bg-[#355061] px-2 text-sm text-white outline-none"
-                    {...register(`products.${productIndex}.packageType`, {
-                      onChange: () => setFormError(null),
-                    })}
-                  >
-                    {packageOptions.map((option) => (
-                      <option
-                        key={option}
-                        value={option}
-                        className="bg-[#0c2432] text-white"
-                      >
-                        {option}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/90">
+                    {getPackageTypeByProductName(watchedProducts[productIndex]?.name ?? '')}
+                  </div>
                 </div>
 
                 <div className="space-y-1">
                   <label className="block text-sm font-medium">Validade</label>
                   {Number(watchedProducts[productIndex]?.quantity ?? 0) <= 0 ? (
                     <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
-                      Informe uma quantidade maior que zero
+                      Quantidade zero dispensa validade
                     </div>
                   ) : (
                     <ProductExpirationDateField

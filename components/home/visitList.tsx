@@ -10,9 +10,15 @@ type VisitListProps = {
     isDraft: boolean;
     canEdit: boolean;
   }[];
+  page: number;
+  hasNextPage: boolean;
+  totalVisits: number | null;
+  pageSize: number;
 };
 
-export function VisitList({ visits }: VisitListProps) {
+export function VisitList({ visits, page, hasNextPage, totalVisits, pageSize }: VisitListProps) {
+  const hasPreviousPage = page > 1;
+
   return (
     <section className="mx-auto w-full max-w-4xl px-6 pt-24">
       <div className="flex flex-col gap-4 rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-5 py-5 shadow-[0_20px_50px_rgba(0,0,0,0.2)] sm:flex-row sm:items-end sm:justify-between">
@@ -88,6 +94,38 @@ export function VisitList({ visits }: VisitListProps) {
             </article>
           ))
         )}
+      </div>
+
+      <div className="mt-6 flex flex-col gap-3 rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-4 text-sm text-[#b6cfd9] shadow-[0_16px_35px_rgba(0,0,0,0.16)] sm:flex-row sm:items-center sm:justify-between">
+        <span>
+          Pagina {page}
+          {totalVisits !== null ? ` de ${Math.max(1, Math.ceil(totalVisits / pageSize))} · ${totalVisits} visitas` : ''}
+        </span>
+
+        <div className="flex gap-2">
+          <Link
+            href={hasPreviousPage ? `/promotor?page=${page - 1}` : '/promotor'}
+            aria-disabled={!hasPreviousPage}
+            className={`inline-flex h-10 items-center justify-center rounded-xl px-4 text-sm font-semibold transition ${
+              hasPreviousPage
+                ? 'border border-white/15 bg-white/[0.04] text-white hover:bg-white/[0.1]'
+                : 'cursor-not-allowed border border-white/10 bg-white/[0.02] text-white/35 pointer-events-none'
+            }`}
+          >
+            Anterior
+          </Link>
+          <Link
+            href={`/promotor?page=${page + 1}`}
+            aria-disabled={!hasNextPage}
+            className={`inline-flex h-10 items-center justify-center rounded-xl px-4 text-sm font-semibold transition ${
+              hasNextPage
+                ? 'border border-[#00c487]/35 bg-[#009c6c]/18 text-[#dcfff3] hover:bg-[#009c6c]/28'
+                : 'cursor-not-allowed border border-white/10 bg-white/[0.02] text-white/35 pointer-events-none'
+            }`}
+          >
+            Proxima
+          </Link>
+        </div>
       </div>
     </section>
   );

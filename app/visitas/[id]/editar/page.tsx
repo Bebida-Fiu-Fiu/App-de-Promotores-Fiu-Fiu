@@ -3,8 +3,8 @@ import { ArrowLeft } from 'lucide-react';
 import { notFound, redirect } from 'next/navigation';
 
 import { NewVisitForm } from '@/components/visits/new-visit-form';
-import { getPromotorIdFromSession, getSession } from '@/lib/auth';
-import { listPromotorVisitsByPromotorId } from '@/lib/api/promotor';
+import { getSession } from '@/lib/auth';
+import { getVisitById } from '@/lib/api/promotor';
 
 type EditableVisitProduct = {
   name: string;
@@ -60,38 +60,33 @@ export default async function EditVisitPage({
     | null = null;
 
   try {
-    const promotorId = getPromotorIdFromSession(session);
+    const row = await getVisitById(session.accessToken, Number(id));
 
-    if (typeof promotorId === 'number') {
-      const visits = await listPromotorVisitsByPromotorId(session.accessToken, promotorId);
-      const row = visits.find((entry) => entry.id === Number(id));
-
-      if (row) {
-        visit = {
-          establishment: row.establishment ?? '',
-          date: formatDatabaseDateToDisplay(row.visitDate),
-          beforeImage: row.beforeImage ?? '',
-          afterImage: row.afterImage ?? '',
-          products: Array.isArray(row.products) && row.products.length > 0
-            ? (row.products as StoredVisitProduct[]).map((product) => ({
-                name: product.name ?? '',
-                quantity: Number(product.quantity ?? 0),
-                packageType:
-                  product.unit === 'pack' || product.unit === 'caixa' ? product.unit : 'unidade',
-                expirationDate: product.expirationDate ?? '',
-              }))
-            : [
-                {
-                  name: '',
-                  quantity: 0,
-                  packageType: 'unidade',
-                  expirationDate: '',
-                },
-              ],
-          isDraft: Boolean(row.isDraft),
-          canEdit: row.canEdit,
-        };
-      }
+    if (row) {
+      visit = {
+        establishment: row.establishment ?? '',
+        date: formatDatabaseDateToDisplay(row.visitDate),
+        beforeImage: row.beforeImage ?? '',
+        afterImage: row.afterImage ?? '',
+        products: Array.isArray(row.products) && row.products.length > 0
+          ? (row.products as StoredVisitProduct[]).map((product) => ({
+              name: product.name ?? '',
+              quantity: Number(product.quantity ?? 0),
+              packageType:
+                product.unit === 'pack' || product.unit === 'caixa' ? product.unit : 'unidade',
+              expirationDate: product.expirationDate ?? '',
+            }))
+          : [
+              {
+                name: '',
+                quantity: 0,
+                packageType: 'unidade',
+                expirationDate: '',
+              },
+            ],
+        isDraft: Boolean(row.isDraft),
+        canEdit: row.canEdit,
+      };
     }
   } catch (error) {
     console.error('Edit visit API lookup error:', error);

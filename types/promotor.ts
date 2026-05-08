@@ -19,6 +19,14 @@ export type PromotorVisit = {
   updatedAt: string | null;
 };
 
+export type PromotorVisitListPage = {
+  items: PromotorVisit[];
+  page: number;
+  pageSize: number;
+  total: number | null;
+  hasNextPage: boolean;
+};
+
 export type PromotorMileageRecord = {
   id: number;
   promotorId: number | null;
@@ -59,6 +67,7 @@ export type PromotorProfile = {
 
 export type PromotorVisitPayload = {
   establishment: number;
+  establishmentName?: string;
   date: string;
   products: PromotorVisitProduct[];
   beforeImage?: string;
