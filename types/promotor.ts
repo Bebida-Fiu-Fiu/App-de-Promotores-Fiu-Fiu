@@ -1,18 +1,28 @@
 export type PromotorVisitProduct = {
   name: string;
   quantity: number;
-  unit: string;
+  unit: 'unidade' | 'pack' | 'caixa';
   expirationDate: string;
 };
+
+export type PromotorVisitImageUpload = {
+  filename: string;
+  contentType: string;
+  base64: string;
+};
+
+export type PromotorVisitImageInput = string | PromotorVisitImageUpload | null;
 
 export type PromotorVisit = {
   id: number;
   promotorId: number | null;
+  establishmentId: number | null;
   establishment: string;
   visitDate: string | null;
   products: PromotorVisitProduct[];
   beforeImage: string;
   afterImage: string;
+  observation: string | null;
   isDraft: boolean;
   canEdit: boolean;
   createdAt: string | null;
@@ -66,11 +76,11 @@ export type PromotorProfile = {
 };
 
 export type PromotorVisitPayload = {
-  establishment: number;
-  establishmentName?: string;
-  date: string;
+  establishment?: number | null;
+  visitDate?: string | null;
   products: PromotorVisitProduct[];
-  beforeImage?: string;
-  afterImage?: string;
+  beforeImage?: PromotorVisitImageInput;
+  afterImage?: PromotorVisitImageInput;
+  observation?: string | null;
   isDraft?: boolean;
 };

@@ -51,6 +51,7 @@ export default async function VisitDetailsPage({
         products: VisitProduct[];
         beforeImage: string;
         afterImage: string;
+        observation: string | null;
         isDraft: boolean;
         canEdit: boolean;
       }
@@ -66,6 +67,7 @@ export default async function VisitDetailsPage({
         products: currentVisit.products,
         beforeImage: currentVisit.beforeImage ?? '',
         afterImage: currentVisit.afterImage ?? '',
+        observation: currentVisit.observation,
         isDraft: Boolean(currentVisit.isDraft),
         canEdit: currentVisit.canEdit,
       };
@@ -128,6 +130,15 @@ export default async function VisitDetailsPage({
         </div>
 
         <div className="mt-6">
+          {visit.observation && (
+            <div className="mb-6 rounded-[24px] border border-white/10 bg-white/[0.04] p-5 shadow-[0_16px_35px_rgba(0,0,0,0.16)]">
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
+                Observacao
+              </p>
+              <p className="mt-3 text-sm leading-6 text-white/80">{visit.observation}</p>
+            </div>
+          )}
+
           {(visit.beforeImage || visit.afterImage) && (
             <div className="mb-6 grid gap-4 sm:grid-cols-2">
               {visit.beforeImage && (

@@ -1,52 +1,72 @@
 'use client';
 
-import { Building2, CalendarDays, ChevronDown, ImageIcon, Search, Trash2 } from 'lucide-react';
-import NextImage from 'next/image';
-import { startTransition, useEffect, useRef, useState, type ChangeEvent } from 'react';
+import { zodResolver } from '@hookform/resolvers/zod';
+import { Building2, CalendarDays, ImageIcon, Search, Trash2 } from 'lucide-react';
+import Image from 'next/image';
 import { useRouter } from 'next/navigation';
+import { startTransition, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
+import { z } from 'zod';
 
-import {
-  createVisit,
-  getSessionHomePath,
-  saveVisitDraft,
-  searchClients,
-} from '@/lib/actions';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
+import { fileToVisitImageUpload } from '@/lib/file-utils';
+import type { PromotorVisitImageInput, PromotorVisitProduct } from '@/types/promotor';
 
-const productSuggestions = [
+const PRODUCT_OPTIONS = [
   'Cajazinha',
-  'Abacaxi Cortelâ',
-  'Tangerina c/ Acerola',
+  'Abacaxi Cortelã',
+  'Tangerina com Acerola',
   'Pomar',
+  'Pitaya com Melancia',
   'ICE Cajalemon',
   'ICE Chicletin',
   'ICE Limonada Rosa',
   'ICE Três Limões',
   'ICE Maracujá e Morango',
-  'Licor Banoffe',
   'Licor Suspiro',
-  'Licor Brigadeiro',
   'Licor Churros',
+  'Licor Banoffe',
+  'Licor Brigadeiro',
   'Licor Tortinha de Limão',
-  'Licor Paçoca'
-];
+  'Licor Paçoca',
+] as const;
 
-type PackageType = 'unidade' | 'pack';
+function getProductUnit(productName: string): 'unidade' | 'pack' {
+  return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
+}
 
-type VisitFormValues = {
-  establishment: string;
-  clientId: string;
-  date: string;
-  beforeImage: string;
-  afterImage: string;
-  products: {
-    name: string;
-    quantity: number;
-    packageType: PackageType;
-    expirationDate: string;
-  }[];
-};
+const visitProductSchema = z.object({
+  name: z.string().trim(),
+  quantity: z.preprocess((value) => {
+    if (value === '' || value === null || value === undefined) {
+      return 0;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }, z.number().min(0, 'Informe uma quantidade valida.')),
+  unit: z.enum(['unidade', 'pack', 'caixa']),
+  expirationDate: z.string(),
+});
+
+const visitFormSchema = z.object({
+  establishmentId: z.preprocess((value) => {
+    if (value === '' || value === null || value === undefined) {
+      return null;
+    }
+
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }, z.number().int().positive().nullable()),
+  establishmentLabel: z.string().trim(),
+  visitDate: z.string(),
+  observation: z.string().trim().max(1000, 'A observacao deve ter no maximo 1000 caracteres.'),
+  products: z.array(visitProductSchema),
+});
+
+type VisitFormInput = z.input<typeof visitFormSchema>;
+type VisitFormValues = z.output<typeof visitFormSchema>;
 
 type ClientSearchFilters = {
   clientId: string;
@@ -75,336 +95,49 @@ type ClientSearchResult = {
 
 type InitialClientData = ClientSearchResult;
 
-function formatDateToDisplay(value: string) {
-  if (!value) {
-    return '';
+type VisitImageState = {
+  previewUrl: string;
+  existingValue: string | null;
+  file: File | null;
+};
+
+type NewVisitFormProps = {
+  visitId?: number;
+  isDraft?: boolean;
+  initialData?: Partial<VisitFormValues> & {
+    beforeImage?: string;
+    afterImage?: string;
+  };
+  initialClient?: InitialClientData | null;
+};
+
+function formatDateInput(value: string) {
+  const digits = value.replace(/\D/g, '').slice(0, 8);
+
+  if (digits.length <= 2) {
+    return digits;
   }
 
-  const [year, month, day] = value.split('-');
-
-  if (!year || !month || !day) {
-    return value;
+  if (digits.length <= 4) {
+    return `${digits.slice(0, 2)}/${digits.slice(2)}`;
   }
+
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
+function getTodayDisplayDate() {
+  const today = new Date();
+  const day = String(today.getDate()).padStart(2, '0');
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const year = today.getFullYear();
 
   return `${day}/${month}/${year}`;
-}
-
-function getTodayIsoDate() {
-  const today = new Date();
-  const year = today.getFullYear();
-  const month = String(today.getMonth() + 1).padStart(2, '0');
-  const day = String(today.getDate()).padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
-}
-
-async function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(new Error('Nao foi possivel ler a imagem.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function compressImageFile(file: File) {
-  const dataUrl = await readFileAsDataUrl(file);
-
-  return new Promise<string>((resolve, reject) => {
-    const image = new window.Image();
-
-    image.onload = () => {
-      const maxDimension = 1280;
-      const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
-      const width = Math.max(1, Math.round(image.width * scale));
-      const height = Math.max(1, Math.round(image.height * scale));
-      const canvas = document.createElement('canvas');
-
-      canvas.width = width;
-      canvas.height = height;
-
-      const context = canvas.getContext('2d');
-
-      if (!context) {
-        resolve(dataUrl);
-        return;
-      }
-
-      context.drawImage(image, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', 0.82));
-    };
-
-    image.onerror = () => reject(new Error('Nao foi possivel processar a imagem.'));
-    image.src = dataUrl;
-  });
-}
-
-function VisitImageField({
-  inputId,
-  label,
-  value,
-  onChange,
-}: {
-  inputId: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [fieldError, setFieldError] = useState<string | null>(null);
-
-  const handleFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-
-    if (!file) {
-      return;
-    }
-
-    if (!file.type.startsWith('image/')) {
-      setFieldError('Selecione um arquivo de imagem valido.');
-      event.target.value = '';
-      return;
-    }
-
-    setFieldError(null);
-    setIsProcessing(true);
-
-    try {
-      const compressedImage = await compressImageFile(file);
-      onChange(compressedImage);
-    } catch {
-      setFieldError('Nao foi possivel carregar essa imagem.');
-    } finally {
-      setIsProcessing(false);
-      event.target.value = '';
-    }
-  };
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center gap-2">
-        <ImageIcon size={16} />
-        <label htmlFor={inputId} className="block text-sm font-medium">
-          {label}
-        </label>
-      </div>
-
-      <input
-        ref={inputRef}
-        id={inputId}
-        type="file"
-        accept="image/*"
-        className="sr-only"
-        onChange={(event) => {
-          void handleFileChange(event);
-        }}
-      />
-
-      {value ? (
-        <div className="overflow-hidden rounded-xl border border-[#707070] bg-black/15">
-          <NextImage
-            src={value}
-            alt={`Preview ${label.toLowerCase()}`}
-            width={800}
-            height={500}
-            unoptimized
-            className="h-44 w-full object-cover"
-          />
-          <div className="flex items-center justify-between gap-2 border-t border-white/10 p-3">
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              disabled={isProcessing}
-              className="rounded-md border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {isProcessing ? 'Processando...' : 'Trocar imagem'}
-            </button>
-            <button
-              type="button"
-              onClick={() => onChange('')}
-              className="rounded-md border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 py-1.5 text-xs font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
-            >
-              Remover
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={isProcessing}
-          className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-xl border border-dashed border-[#707070] bg-white/5 px-4 text-center transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-70"
-        >
-          <ImageIcon size={24} className="text-white/70" />
-          <div>
-            <p className="text-sm font-semibold text-white">
-              {isProcessing ? 'Processando imagem...' : `Adicionar imagem ${label.toLowerCase()}`}
-            </p>
-            <p className="mt-1 text-xs text-white/65">Toque para selecionar e ver o preview</p>
-          </div>
-        </button>
-      )}
-
-      {fieldError && <p className="text-xs text-[#ffd6d6]">{fieldError}</p>}
-    </div>
-  );
-}
-
-function ProductExpirationDateField({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const expirationPickerRef = useRef<HTMLInputElement | null>(null);
-
-  return (
-    <div className="flex h-8 items-center rounded-md border border-[#707070] bg-white/20">
-      <input
-        type="text"
-        inputMode="numeric"
-        placeholder="Val. dd/mm/aaaa"
-        value={value}
-        className="h-full w-full bg-transparent px-3 text-center text-sm outline-none"
-        onChange={(event) => onChange(event.target.value)}
-      />
-
-      <button
-        type="button"
-        onClick={() => expirationPickerRef.current?.showPicker?.()}
-        className="flex h-full items-center justify-center border-l border-[#707070] px-2 text-white transition hover:bg-white/10"
-        aria-label="Selecionar data de validade"
-      >
-        <CalendarDays size={14} />
-      </button>
-
-      <input
-        ref={expirationPickerRef}
-        type="date"
-        className="sr-only"
-        min={getTodayIsoDate()}
-        onChange={(event) => onChange(formatDateToDisplay(event.target.value))}
-      />
-    </div>
-  );
-}
-
-function ProductSelectField({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [query, setQuery] = useState(value);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    setQuery(value);
-  }, [value]);
-
-  useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-    };
-  }, [isOpen]);
-
-  const normalizedQuery = query.trim().toLowerCase();
-  const filteredProducts = productSuggestions.filter((product) =>
-    product.toLowerCase().includes(normalizedQuery)
-  );
-
-  return (
-    <div ref={containerRef} className="relative">
-      <button
-        type="button"
-        onClick={() => setIsOpen((current) => !current)}
-        className="flex h-8 w-full items-center justify-between rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white transition hover:bg-[#416174]"
-      >
-        <span className={value ? 'text-white' : 'text-white/60'}>
-          {value || 'Selecione um produto'}
-        </span>
-        <ChevronDown size={14} className={`transition ${isOpen ? 'rotate-180' : ''}`} />
-      </button>
-
-      {isOpen && (
-        <div className="absolute left-0 right-0 top-[calc(100%+0.35rem)] z-20 rounded-md border border-[#707070] bg-[#0c2432] p-2 shadow-[0_18px_40px_rgba(0,0,0,0.35)]">
-          <input
-            type="text"
-            value={query}
-            placeholder="Pesquisar produto"
-            className="h-8 w-full rounded-md border border-[#707070] bg-white/10 px-3 text-sm text-white outline-none placeholder:text-white/45"
-            onChange={(event) => setQuery(event.target.value)}
-          />
-
-          <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">
-            {filteredProducts.length > 0 ? (
-              filteredProducts.map((product) => (
-                <button
-                  key={product}
-                  type="button"
-                  onClick={() => {
-                    onChange(product);
-                    setQuery(product);
-                    setIsOpen(false);
-                  }}
-                  className={`w-full rounded-md px-3 py-2 text-left text-sm text-white transition ${
-                    value === product ? 'bg-[#009c6c]/25' : 'bg-white/5 hover:bg-white/10'
-                  }`}
-                >
-                  {product}
-                </button>
-              ))
-            ) : (
-              <p className="px-3 py-2 text-sm text-white/65">Nenhum produto encontrado.</p>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function buildEstablishmentLabel(client: ClientSearchResult) {
-  return client.nickname || client.fantasy_name || client.client_name;
-}
-
-function buildClientSubtitle(client: ClientSearchResult) {
-  const addressParts = [
-    client.address,
-    client.address_number,
-    client.neighborhood,
-    client.city,
-    client.state,
-  ].filter(Boolean);
-
-  return addressParts.join(', ');
-}
-
-function isCompleteDate(value: string) {
-  return /^\d{2}\/\d{2}\/\d{4}$/.test(value.trim());
 }
 
 function parseDisplayDate(value: string) {
   const trimmedValue = value.trim();
 
-  if (!isCompleteDate(trimmedValue)) {
+  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(trimmedValue)) {
     return null;
   }
 
@@ -427,81 +160,235 @@ function parseDisplayDate(value: string) {
   return date;
 }
 
-function isTodayOrFutureDate(value: string) {
-  const date = parseDisplayDate(value);
+function isValidDisplayDate(value: string) {
+  return parseDisplayDate(value) !== null;
+}
 
-  if (!date) {
+function displayDateToIso(value: string) {
+  const parsedDate = parseDisplayDate(value);
+
+  if (!parsedDate) {
+    return null;
+  }
+
+  const day = String(parsedDate.getDate()).padStart(2, '0');
+  const month = String(parsedDate.getMonth() + 1).padStart(2, '0');
+  const year = parsedDate.getFullYear();
+
+  return `${year}-${month}-${day}`;
+}
+
+function isoDateToDisplay(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return '';
+  }
+
+  const [year, month, day] = value.split('-');
+  return `${day}/${month}/${year}`;
+}
+
+function addMonths(date: Date, months: number) {
+  return new Date(date.getFullYear(), date.getMonth() + months, date.getDate());
+}
+
+function isExpirationWithinVisitWindow(visitDate: string, expirationDate: string) {
+  const parsedVisitDate = parseDisplayDate(visitDate);
+  const parsedExpirationDate = parseDisplayDate(expirationDate);
+
+  if (!parsedVisitDate || !parsedExpirationDate) {
     return false;
   }
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  date.setHours(0, 0, 0, 0);
+  const maxExpirationDate = addMonths(parsedVisitDate, 18);
 
-  return date.getTime() >= today.getTime();
+  return parsedExpirationDate.getTime() <= maxExpirationDate.getTime();
 }
 
-function getPackageTypeByProductName(productName: string): PackageType {
-  return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
+function buildEstablishmentLabel(client: ClientSearchResult) {
+  return client.nickname || client.fantasy_name || client.client_name;
 }
 
-function normalizeProductsPackageType(products: VisitFormValues['products']) {
-  return products.map((product) => ({
-    ...product,
-    packageType: getPackageTypeByProductName(product.name),
-  }));
+function buildClientSubtitle(client: ClientSearchResult) {
+  return [
+    client.address,
+    client.address_number,
+    client.neighborhood,
+    client.city,
+    client.state,
+  ]
+    .filter(Boolean)
+    .join(', ');
 }
 
-function shouldSkipExpiration(product: VisitFormValues['products'][number] | undefined) {
-  if (!product) {
-    return false;
+function isBlankProduct(product: VisitFormValues['products'][number]) {
+  return (
+    !product.name.trim() &&
+    Number(product.quantity || 0) === 0 &&
+    product.unit === 'unidade' &&
+    !product.expirationDate
+  );
+}
+
+function isCompleteProduct(product: VisitFormValues['products'][number]) {
+  return Boolean(
+    product.name.trim() &&
+    Number.isFinite(product.quantity) &&
+    product.quantity >= 0 &&
+    product.unit &&
+    isValidDisplayDate(product.expirationDate)
+  );
+}
+
+function getFriendlyApiMessage(error: string | null | undefined) {
+  if (!error) {
+    return 'Nao foi possivel salvar a visita. Tente novamente.';
   }
 
-  return Number(product.quantity) <= 0;
+  const normalizedError = error.toLowerCase();
+
+  if (normalizedError.includes('unauthorized') || normalizedError.includes('sessao')) {
+    return 'Sua sessao expirou. Entre novamente para continuar.';
+  }
+
+  if (normalizedError.includes('establishment')) {
+    return 'Selecione um estabelecimento valido antes de continuar.';
+  }
+
+  if (normalizedError.includes('visitdate') || normalizedError.includes('data')) {
+    return 'Revise a data da visita e tente novamente.';
+  }
+
+  if (normalizedError.includes('product')) {
+    return 'Revise os produtos informados e tente novamente.';
+  }
+
+  if (normalizedError.includes('image') || normalizedError.includes('imagem')) {
+    return 'Nao foi possivel processar uma das imagens. Tente selecionar o arquivo novamente.';
+  }
+
+  return error;
 }
 
-function getMissingInformationMessage(data: VisitFormValues) {
-  if (!data.establishment.trim() || !data.clientId.trim()) {
-    return 'Selecione um estabelecimento antes de enviar a visita.';
+async function buildImagePayload(image: VisitImageState): Promise<PromotorVisitImageInput> {
+  if (image.file) {
+    return fileToVisitImageUpload(image.file);
   }
 
-  if (!isCompleteDate(data.date)) {
-    return 'Informe a data da visita no formato dd/mm/aaaa.';
-  }
-
-  const firstIncompleteProduct = data.products.findIndex((product) => {
-    return (
-      !product.name.trim() ||
-      !Number.isFinite(product.quantity) ||
-      product.quantity < 0 ||
-      (!shouldSkipExpiration(product) && !isTodayOrFutureDate(product.expirationDate))
-    );
-  });
-
-  if (firstIncompleteProduct >= 0) {
-    const productNumber = firstIncompleteProduct + 1;
-    const product = data.products[firstIncompleteProduct];
-
-    if (!product.name.trim()) {
-      return `Preencha o nome do produto ${productNumber}.`;
-    }
-
-    if (!Number.isFinite(product.quantity) || product.quantity < 0) {
-      return `Informe uma quantidade valida para o produto ${productNumber}.`;
-    }
-
-    return `Informe uma validade valida e igual ou maior que hoje para o produto ${productNumber}.`;
+  if (image.existingValue) {
+    return image.existingValue;
   }
 
   return null;
 }
 
-type NewVisitFormProps = {
-  visitId?: number;
-  isDraft?: boolean;
-  initialData?: Partial<VisitFormValues>;
-  initialClient?: InitialClientData | null;
-};
+function VisitImageField({
+  id,
+  label,
+  image,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  image: VisitImageState;
+  onChange: (nextValue: VisitImageState) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
+
+  const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFile = event.target.files?.[0];
+
+    if (!selectedFile) {
+      return;
+    }
+
+    if (!selectedFile.type.startsWith('image/')) {
+      setFieldError('Selecione um arquivo de imagem valido.');
+      event.target.value = '';
+      return;
+    }
+
+    setFieldError(null);
+
+    const objectUrl = URL.createObjectURL(selectedFile);
+    onChange({
+      previewUrl: objectUrl,
+      existingValue: null,
+      file: selectedFile,
+    });
+
+    event.target.value = '';
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <ImageIcon size={16} />
+        <label htmlFor={id} className="text-sm font-medium text-white">
+          {label}
+        </label>
+      </div>
+
+      <input
+        ref={inputRef}
+        id={id}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={handleFileChange}
+      />
+
+      {image.previewUrl ? (
+        <div className="overflow-hidden rounded-2xl border border-white/12 bg-white/5">
+          <Image
+            src={image.previewUrl}
+            alt={`Preview ${label.toLowerCase()}`}
+            width={1200}
+            height={900}
+            unoptimized
+            className="h-44 w-full object-cover"
+          />
+          <div className="flex items-center justify-between gap-2 border-t border-white/10 p-3">
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
+            >
+              Trocar imagem
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                onChange({
+                  previewUrl: '',
+                  existingValue: null,
+                  file: null,
+                })
+              }
+              className="rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 py-2 text-xs font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+            >
+              Remover
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/20 bg-white/5 px-4 text-center transition hover:bg-white/10"
+        >
+          <ImageIcon size={22} className="text-white/65" />
+          <div>
+            <p className="text-sm font-semibold text-white">Adicionar {label.toLowerCase()}</p>
+            <p className="mt-1 text-xs text-white/60">Selecione uma foto para enviar junto da visita</p>
+          </div>
+        </button>
+      )}
+
+      {fieldError && <p className="text-xs text-red-200">{fieldError}</p>}
+    </div>
+  );
+}
 
 export function NewVisitForm({
   visitId,
@@ -511,9 +398,10 @@ export function NewVisitForm({
 }: NewVisitFormProps) {
   const router = useRouter();
   const visitDatePickerRef = useRef<HTMLInputElement | null>(null);
-  const [modalMessage, setModalMessage] = useState<string | null>(null);
-  const [modalMode, setModalMode] = useState<'success' | 'error' | null>(null);
+  const [homePath, setHomePath] = useState('/promotor');
   const [formError, setFormError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [submitMode, setSubmitMode] = useState<'draft' | 'final' | null>(null);
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
     clientId: '',
     clientName: '',
@@ -527,69 +415,63 @@ export function NewVisitForm({
   });
   const [searchResults, setSearchResults] = useState<ClientSearchResult[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(initialClient);
   const [isSearching, setIsSearching] = useState(false);
   const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
   const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
-  const [homePath, setHomePath] = useState('/promotor');
-  const initialClientId =
-    initialClient?.id ??
-    (initialData?.establishment && /^\d+$/.test(initialData.establishment)
-      ? Number(initialData.establishment)
-      : null);
-
-  const {
-    register,
-    control,
-    handleSubmit,
-    getValues,
-    setValue,
-    reset,
-    formState: { isSubmitting },
-  } = useForm<VisitFormValues>({
-    defaultValues: {
-      establishment: initialData?.establishment ?? '',
-      clientId: initialClientId ? String(initialClientId) : '',
-      date: initialData?.date ?? formatDateToDisplay(new Date().toISOString().split('T')[0]),
-      beforeImage: initialData?.beforeImage ?? '',
-      afterImage: initialData?.afterImage ?? '',
-      products: initialData?.products?.length
-        ? initialData.products
-        : [
-            {
-              name: '',
-              quantity: 0,
-              packageType: 'unidade',
-              expirationDate: '',
-            },
-          ],
-    },
+  const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(initialClient);
+  const [beforeImage, setBeforeImage] = useState<VisitImageState>({
+    previewUrl: initialData?.beforeImage ?? '',
+    existingValue: initialData?.beforeImage ?? null,
+    file: null,
+  });
+  const [afterImage, setAfterImage] = useState<VisitImageState>({
+    previewUrl: initialData?.afterImage ?? '',
+    existingValue: initialData?.afterImage ?? null,
+    file: null,
   });
 
-  const visitDate = useWatch({
+  const defaultValues = useMemo<VisitFormInput>(() => ({
+    establishmentId: initialData?.establishmentId ?? initialClient?.id ?? null,
+    establishmentLabel:
+      initialData?.establishmentLabel ??
+      (initialClient ? buildEstablishmentLabel(initialClient) : ''),
+    visitDate: initialData?.visitDate ?? getTodayDisplayDate(),
+    observation: initialData?.observation ?? '',
+    products: initialData?.products ?? [],
+  }), [initialClient, initialData]);
+
+  const {
     control,
-    name: 'date',
-  }) ?? '';
-  const watchedEstablishment = useWatch({
-    control,
-    name: 'establishment',
-  }) ?? '';
-  const watchedBeforeImage = useWatch({
-    control,
-    name: 'beforeImage',
-  }) ?? '';
-  const watchedAfterImage = useWatch({
-    control,
-    name: 'afterImage',
-  }) ?? '';
-  const watchedProducts = useWatch({
-    control,
-    name: 'products',
-  }) ?? [];
+    register,
+    handleSubmit,
+    reset,
+    setValue,
+    formState: { errors, isSubmitting },
+  } = useForm<VisitFormInput, unknown, VisitFormValues>({
+    resolver: zodResolver(visitFormSchema),
+    defaultValues,
+  });
 
   const { fields, append, remove } = useFieldArray({
     control,
     name: 'products',
+  });
+
+  const watchedEstablishment = useWatch({
+    control,
+    name: 'establishmentLabel',
+  });
+  const watchedProducts = useWatch({
+    control,
+    name: 'products',
+  });
+  const watchedVisitDate = useWatch({
+    control,
+    name: 'visitDate',
+  });
+  const watchedEstablishmentId = useWatch({
+    control,
+    name: 'establishmentId',
   });
 
   useEffect(() => {
@@ -606,30 +488,32 @@ export function NewVisitForm({
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (beforeImage.file && beforeImage.previewUrl) {
+        URL.revokeObjectURL(beforeImage.previewUrl);
+      }
+
+      if (afterImage.file && afterImage.previewUrl) {
+        URL.revokeObjectURL(afterImage.previewUrl);
+      }
+    };
+  }, [afterImage, beforeImage]);
+
   const handleFilterChange = (field: keyof ClientSearchFilters, value: string) => {
-    setFormError(null);
     setSearchFilters((current) => ({
       ...current,
       [field]: value,
     }));
+    setSearchError(null);
+    setFormError(null);
   };
 
   const handleSearchModeChange = (mode: 'agenda' | 'general') => {
     setClientSearchMode(mode);
     setShowAdvancedAgendaSearch(false);
-    setSearchResults([]);
     setSearchError(null);
-    setSelectedClient(null);
-    setValue('establishment', '', {
-      shouldDirty: true,
-      shouldTouch: true,
-      shouldValidate: true,
-    });
-    setValue('clientId', '', {
-      shouldDirty: true,
-      shouldTouch: true,
-      shouldValidate: true,
-    });
+    setSearchResults([]);
   };
 
   const handleSearchClients = async () => {
@@ -661,205 +545,203 @@ export function NewVisitForm({
 
   const handleSelectClient = (client: ClientSearchResult) => {
     setSelectedClient(client);
-    setFormError(null);
-    setValue('establishment', buildEstablishmentLabel(client), {
+    setValue('establishmentId', client.id, { shouldDirty: true, shouldValidate: true });
+    setValue('establishmentLabel', buildEstablishmentLabel(client), {
       shouldDirty: true,
-      shouldTouch: true,
-      shouldValidate: true,
-    });
-    setValue('clientId', String(client.id), {
-      shouldDirty: true,
-      shouldTouch: true,
       shouldValidate: true,
     });
     setSearchError(null);
+    setFormError(null);
   };
 
-  const onSubmit = async (data: VisitFormValues) => {
-    const normalizedData = {
-      ...data,
-      products: normalizeProductsPackageType(data.products),
-    };
-    const missingInformationMessage = getMissingInformationMessage(normalizedData);
-
-    if (missingInformationMessage) {
-      setFormError(missingInformationMessage);
-      return;
-    }
-
-    setFormError(null);
-    const result = await createVisit(normalizedData, visitId);
-
-    if (!result.success) {
-      setModalMode('error');
-      setModalMessage(result.error ?? 'Nao foi possivel salvar a visita.');
-      return;
-    }
-
-    reset({
-      establishment: '',
-      clientId: '',
-      date: formatDateToDisplay(new Date().toISOString().split('T')[0]),
-      beforeImage: '',
-      afterImage: '',
-      products: [
-        {
-          name: '',
-          quantity: 0,
-          packageType: 'unidade',
-          expirationDate: '',
-        },
-      ],
-    });
-
+  const clearSelectedClient = () => {
     setSelectedClient(null);
-    setSearchResults([]);
-    setSearchError(null);
-    setSearchFilters({
-      clientId: '',
-      clientName: '',
-      fantasyName: '',
-      document: '',
-      city: '',
-      address: '',
-      addressNumber: '',
-      neighborhood: '',
-      state: '',
-    });
-    setModalMode('success');
-    setModalMessage(visitId ? 'Visita atualizada com sucesso.' : 'Visita cadastrada com sucesso.');
+    setValue('establishmentId', null, { shouldDirty: true, shouldValidate: true });
+    setValue('establishmentLabel', '', { shouldDirty: true, shouldValidate: true });
+    setFormError(null);
   };
 
-  const handleSaveDraft = async () => {
+  const validateBeforeSubmit = (values: VisitFormValues, mode: 'draft' | 'final') => {
+    if (mode === 'final' && !values.establishmentId) {
+      return 'Selecione um estabelecimento antes de enviar a visita.';
+    }
+
+    if (mode === 'final' && !values.visitDate) {
+      return 'Selecione a data da visita.';
+    }
+
+    if (mode === 'final' && !isValidDisplayDate(values.visitDate)) {
+      return 'Informe uma data da visita valida no formato dd/mm/aaaa.';
+    }
+
+    const firstPartialProduct = values.products.findIndex(
+      (product) => !isBlankProduct(product) && !isCompleteProduct(product)
+    );
+
+    if (mode === 'final' && firstPartialProduct >= 0) {
+      return `Complete os dados do produto ${firstPartialProduct + 1} antes de enviar a visita.`;
+    }
+
+    const invalidExpirationProduct = values.products.findIndex(
+      (product) =>
+        !isBlankProduct(product) &&
+        isCompleteProduct(product) &&
+        !isExpirationWithinVisitWindow(values.visitDate, product.expirationDate)
+    );
+
+    if (invalidExpirationProduct >= 0) {
+      return `A validade do produto ${invalidExpirationProduct + 1} nao pode passar de 18 meses apos a data da visita.`;
+    }
+
+    return null;
+  };
+
+  const onSubmit = async (values: VisitFormValues, mode: 'draft' | 'final') => {
     setFormError(null);
-    const currentValues = getValues();
-    const normalizedData = {
-      ...currentValues,
-      products: normalizeProductsPackageType(currentValues.products),
+    setSuccessMessage(null);
+
+    const validationMessage = validateBeforeSubmit(values, mode);
+
+    if (validationMessage) {
+      setFormError(validationMessage);
+      return;
+    }
+
+    const visitDateIso = values.visitDate ? displayDateToIso(values.visitDate) : null;
+
+    const payload = {
+      establishment: values.establishmentId,
+      visitDate: visitDateIso,
+      products: values.products
+        .filter((product) => isCompleteProduct(product))
+        .map((product) => ({
+          ...product,
+          expirationDate: displayDateToIso(product.expirationDate) ?? product.expirationDate,
+        })) as PromotorVisitProduct[],
+      observation: values.observation.trim() || null,
+      beforeImage: await buildImagePayload(beforeImage),
+      afterImage: await buildImagePayload(afterImage),
+      isDraft: mode === 'draft',
     };
 
-    const result = await saveVisitDraft(normalizedData, visitId);
+    const result =
+      mode === 'draft'
+        ? await saveVisitDraft(payload, visitId)
+        : await createVisit(payload, visitId);
 
     if (!result.success) {
-      setModalMode('error');
-      setModalMessage(result.error ?? 'Nao foi possivel salvar o rascunho.');
+      setFormError(getFriendlyApiMessage(result.error));
       return;
     }
 
-    if (result.visitId) {
-      router.push(`/visitas/${result.visitId}/editar`);
+    const successCopy =
+      mode === 'draft' ? 'Rascunho salvo com sucesso.' : 'Visita salva com sucesso.';
+    setSuccessMessage(successCopy);
+
+    const nextVisitId = result.visitId ?? visitId;
+
+    if (!nextVisitId && mode === 'final') {
+      reset({
+        establishmentId: null,
+        establishmentLabel: '',
+        visitDate: getTodayDisplayDate(),
+        observation: '',
+        products: [],
+      });
+      setSelectedClient(null);
+      setBeforeImage({ previewUrl: '', existingValue: null, file: null });
+      setAfterImage({ previewUrl: '', existingValue: null, file: null });
+      return;
+    }
+
+    if (nextVisitId) {
+      router.push(`/visitas/${nextVisitId}`);
       router.refresh();
-      return;
     }
-
-    router.refresh();
   };
 
   return (
-    <section className="flex w-full justify-center px-4 py-10">
-      {modalMessage && modalMode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">
-          <div className="w-full max-w-sm rounded-2xl border border-white/10 bg-[#0c2432] p-6 text-center text-white shadow-[0_18px_50px_rgba(0,0,0,0.35)]">
-            <h2 className="text-xl font-bold">
-              {modalMode === 'success' ? 'Visita salva' : 'Erro ao salvar'}
-            </h2>
-            <p className="mt-3 text-sm text-white/85">{modalMessage}</p>
-            <div className="mt-5 flex justify-center gap-3">
-              {modalMode === 'success' && (
+    <section className="mx-auto w-full max-w-4xl px-4 pb-12 pt-8">
+      <div className="rounded-[2rem] border border-white/10 bg-white/6 p-6 shadow-2xl shadow-black/20 backdrop-blur md:p-8">
+        <div className="max-w-2xl">
+          <p className="text-sm font-semibold uppercase tracking-[0.24em] text-[#7fe7c5]">
+            {visitId ? 'Editar visita' : 'Nova visita'}
+          </p>
+          <h1 className="mt-3 text-3xl font-black text-white">
+            {isDraft ? 'Continuar rascunho' : visitId ? 'Atualizar visita' : 'Registrar visita'}
+          </h1>
+          <p className="mt-3 text-sm leading-6 text-white/72">
+            Preencha os dados abaixo para salvar a visita do promotor como rascunho ou envio final.
+          </p>
+        </div>
+
+        <form
+          onSubmit={handleSubmit((values) => onSubmit(values, submitMode ?? 'final'))}
+          className="mt-8 space-y-6"
+        >
+          {successMessage && (
+            <div className="rounded-2xl border border-emerald-300/35 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+              {successMessage}
+            </div>
+          )}
+
+          <div className="rounded-2xl border border-white/20 bg-[#3b5160] px-3 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
+            <div className="flex items-center gap-2 text-white">
+              <Building2 size={16} className="text-white/85" />
+              <h2 className="text-sm font-semibold">Buscar estabelecimento</h2>
+            </div>
+
+            <div className="mt-4">
+              <p className="text-xs font-semibold text-white/90">Modo de pesquisa</p>
+              <div className="mt-2 flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => {
-                    setModalMessage(null);
-                    setModalMode(null);
-                    router.push(homePath);
-                    router.refresh();
-                  }}
-                  className="rounded-md bg-[#009c6c] px-4 py-2 font-semibold text-white transition hover:bg-[#007a55]"
+                  onClick={() => handleSearchModeChange('agenda')}
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                    clientSearchMode === 'agenda'
+                      ? 'border-[#00c48c] bg-[#00c48c] text-white'
+                      : 'border-white/25 bg-[#566977] text-white/85 hover:bg-[#617583]'
+                  }`}
                 >
-                  Ir para home
+                  Agenda
                 </button>
-              )}
-              <button
-                type="button"
-                onClick={() => {
-                  setModalMessage(null);
-                  setModalMode(null);
-                }}
-                className="rounded-md border border-white/20 bg-white/10 px-4 py-2 text-sm text-white transition hover:bg-white/20"
-              >
-                Fechar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      <form
-        onSubmit={handleSubmit(onSubmit)}
-        className="w-full max-w-xs rounded-[1.25rem] border border-[#5b5b5b] bg-white/10 px-3 py-6 text-[#ffffff] shadow-[0_12px_30px_rgba(0,0,0,0.08)]"
-      >
-        <div className="space-y-3">
-          <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
-            <div className="flex items-center gap-2">
-              <Building2 size={16} />
-              <label className="block text-sm font-medium">Buscar estabelecimento</label>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3">
-              <input type="hidden" {...register('establishment')} />
-
-              <div className="space-y-2">
-                <label className="block text-xs font-medium text-white/80">Modo de pesquisa</label>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => handleSearchModeChange('agenda')}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                      clientSearchMode === 'agenda'
-                        ? 'border-[#009c6c] bg-[#009c6c] text-white'
-                        : 'border-white/15 bg-white/5 text-white/75 hover:bg-white/10'
-                    }`}
-                  >
-                    Agenda
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleSearchModeChange('general')}
-                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                      clientSearchMode === 'general'
-                        ? 'border-[#009c6c] bg-[#009c6c] text-white'
-                        : 'border-white/15 bg-white/5 text-white/75 hover:bg-white/10'
-                    }`}
-                  >
-                    Geral
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => handleSearchModeChange('general')}
+                  className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                    clientSearchMode === 'general'
+                      ? 'border-[#00c48c] bg-[#00c48c] text-white'
+                      : 'border-white/25 bg-[#566977] text-white/85 hover:bg-[#617583]'
+                  }`}
+                >
+                  Geral
+                </button>
               </div>
+            </div>
 
-              <div className="space-y-1">
-                <label className="block text-xs font-medium text-white/80">ID do cliente</label>
+            <div className="mt-4 space-y-4">
+              <div>
+                <label className="text-sm font-semibold text-white">ID do cliente</label>
                 <input
                   type="text"
                   inputMode="numeric"
                   value={searchFilters.clientId}
+                  onChange={(event) => handleFilterChange('clientId', event.target.value)}
+                  className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
                   placeholder="Ex.: 123"
-                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
-                  onChange={(event) =>
-                    handleFilterChange('clientId', event.target.value.replace(/\D/g, ''))
-                  }
                 />
               </div>
 
-              <div className="space-y-1">
-                <label className="block text-xs font-medium text-white/80">
+              <div>
+                <label className="text-sm font-semibold text-white">
                   {clientSearchMode === 'agenda' ? 'Apelido' : 'Nome'}
                 </label>
                 <input
                   type="text"
                   value={searchFilters.clientName}
-                  placeholder={clientSearchMode === 'agenda' ? 'Apelido salvo na agenda' : 'Razao social'}
-                  className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                   onChange={(event) => handleFilterChange('clientName', event.target.value)}
+                  className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                  placeholder={clientSearchMode === 'agenda' ? 'Apelido salvo na agenda' : 'Razao social'}
                 />
               </div>
 
@@ -867,7 +749,7 @@ export function NewVisitForm({
                 <button
                   type="button"
                   onClick={() => setShowAdvancedAgendaSearch((current) => !current)}
-                  className="rounded-md border border-white/20 bg-white/5 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
+                  className="flex h-11 w-full items-center justify-center rounded-lg border border-white/25 bg-[#4f6371] px-4 text-sm font-semibold text-white transition hover:bg-[#5a6e7c]"
                 >
                   {showAdvancedAgendaSearch ? 'Ocultar mais informações' : 'Pesquisar com mais informações'}
                 </button>
@@ -875,420 +757,432 @@ export function NewVisitForm({
 
               {(clientSearchMode === 'general' || showAdvancedAgendaSearch) && (
                 <>
-                  <div className="space-y-1">
-                    <label className="block text-xs font-medium text-white/80">Nome fantasia</label>
+                  <div>
+                    <label className="text-sm font-semibold text-white">Nome fantasia</label>
                     <input
                       type="text"
                       value={searchFilters.fantasyName}
-                      placeholder="Nome fantasia"
-                      className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                       onChange={(event) => handleFilterChange('fantasyName', event.target.value)}
+                      className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                      placeholder="Nome fantasia"
                     />
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-medium text-white/80">Documento</label>
+                    <div>
+                      <label className="text-sm font-semibold text-white">Documento</label>
                       <input
                         type="text"
                         value={searchFilters.document}
-                        placeholder="CPF/CNPJ"
-                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                         onChange={(event) => handleFilterChange('document', event.target.value)}
+                        className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                        placeholder="CPF/CNPJ"
                       />
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-xs font-medium text-white/80">Cidade</label>
+                    <div>
+                      <label className="text-sm font-semibold text-white">Cidade</label>
                       <input
                         type="text"
                         value={searchFilters.city}
-                        placeholder="Cidade"
-                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                         onChange={(event) => handleFilterChange('city', event.target.value)}
+                        className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                        placeholder="Cidade"
                       />
                     </div>
                   </div>
 
-                  <div className="space-y-1">
-                    <label className="block text-xs font-medium text-white/80">Endereco</label>
+                  <div>
+                    <label className="text-sm font-semibold text-white">Endereco</label>
                     <input
                       type="text"
                       value={searchFilters.address}
-                      placeholder="Rua, avenida..."
-                      className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                       onChange={(event) => handleFilterChange('address', event.target.value)}
+                      className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                      placeholder="Rua, avenida..."
                     />
                   </div>
 
-                  <div className="grid grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <label className="block text-xs font-medium text-white/80">Numero</label>
+                  <div className="grid grid-cols-[1fr_1fr_0.8fr] gap-3">
+                    <div>
+                      <label className="text-sm font-semibold text-white">Numero</label>
                       <input
                         type="text"
                         value={searchFilters.addressNumber}
-                        placeholder="Numero"
-                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                         onChange={(event) => handleFilterChange('addressNumber', event.target.value)}
+                        className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                        placeholder="Numero"
                       />
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-xs font-medium text-white/80">Bairro</label>
+                    <div>
+                      <label className="text-sm font-semibold text-white">Bairro</label>
                       <input
                         type="text"
                         value={searchFilters.neighborhood}
-                        placeholder="Bairro"
-                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm outline-none"
                         onChange={(event) => handleFilterChange('neighborhood', event.target.value)}
+                        className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                        placeholder="Bairro"
                       />
                     </div>
 
-                    <div className="space-y-1">
-                      <label className="block text-xs font-medium text-white/80">Estado</label>
+                    <div>
+                      <label className="text-sm font-semibold text-white">Estado</label>
                       <input
                         type="text"
-                        value={searchFilters.state}
-                        placeholder="UF"
                         maxLength={2}
-                        className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-sm uppercase outline-none"
+                        value={searchFilters.state}
                         onChange={(event) => handleFilterChange('state', event.target.value.toUpperCase())}
+                        className="mt-2 block h-11 w-full rounded-lg border border-transparent bg-[#738390] px-4 text-base text-white placeholder:text-white/60 uppercase outline-none transition focus:border-[#00c48c] focus:ring-2 focus:ring-[#00c48c]/20"
+                        placeholder="UF"
                       />
                     </div>
                   </div>
                 </>
               )}
-
-              <button
-                type="button"
-                onClick={handleSearchClients}
-                disabled={isSearching}
-                className="flex h-9 items-center justify-center gap-2 rounded-md border border-[#707070] bg-white/20 px-4 text-sm font-medium text-white transition hover:bg-[#e9e9e4] disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                <Search size={14} />
-                {isSearching ? 'Buscando...' : 'Buscar estabelecimento'}
-              </button>
-
-              {(selectedClient || watchedEstablishment) && (
-                <div className="rounded-md border border-[#009c6c] bg-[#009c6c]/15 p-3 text-sm">
-                  <p className="font-semibold text-white">
-                    {selectedClient ? buildEstablishmentLabel(selectedClient) : watchedEstablishment}
-                  </p>
-                  {selectedClient && (
-                    <>
-                      <p className="mt-1 text-xs text-white/75">{buildClientSubtitle(selectedClient)}</p>
-                      <p className="mt-1 text-xs text-white/75">Documento: {selectedClient.document}</p>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedClient(null);
-                      setFormError(null);
-                      setValue('establishment', '', {
-                        shouldDirty: true,
-                        shouldTouch: true,
-                        shouldValidate: true,
-                      });
-                      setValue('clientId', '', {
-                        shouldDirty: true,
-                        shouldTouch: true,
-                        shouldValidate: true,
-                      });
-                    }}
-                    className="mt-3 text-xs font-medium text-white underline underline-offset-2"
-                  >
-                    Limpar selecao
-                  </button>
-                </div>
-              )}
-
-              {searchError && <p className="text-sm text-[#ffd6d6]">{searchError}</p>}
-
-              {searchResults.length > 0 && (
-                <div className="max-h-64 space-y-2 overflow-y-auto rounded-md border border-[#707070] bg-black/10 p-2">
-                  {searchResults.map((client) => {
-                    const isSelected = selectedClient?.id === client.id;
-
-                    return (
-                      <button
-                        key={client.id}
-                        type="button"
-                        onClick={() => handleSelectClient(client)}
-                        className={`w-full rounded-md border px-3 py-2 text-left text-sm transition ${
-                          isSelected
-                            ? 'border-[#009c6c] bg-[#009c6c]/20'
-                            : 'border-[#707070] bg-white/10 hover:bg-white/20'
-                        }`}
-                      >
-                        <p className="font-semibold text-white">
-                          {buildEstablishmentLabel(client)}
-                        </p>
-                        <p className="mt-1 text-xs text-white/80">{client.client_name}</p>
-                        <p className="mt-1 text-xs text-white/70">{buildClientSubtitle(client)}</p>
-                        <p className="mt-1 text-xs text-white/70">Documento: {client.document}</p>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
             </div>
-          </div>
 
-          <div className="space-y-1">
-            <label className="block text-sm font-medium">Data</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                placeholder="dd/mm/aaaa"
-                value={visitDate}
-                className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-3 text-center text-sm outline-none"
-                onChange={(event) => {
-                  setFormError(null);
-                  let v = event.target.value.replace(/\D/g, '');
-                  if (v.length > 8) v = v.slice(0, 8);
-                  if (v.length > 4) {
-                    v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
-                  } else if (v.length > 2) {
-                    v = `${v.slice(0, 2)}/${v.slice(2)}`;
-                  }
-                  setValue('date', v, {
-                    shouldDirty: true,
-                    shouldTouch: true,
-                    shouldValidate: true,
-                  });
-                }}
-              />
+            <button
+              type="button"
+              onClick={handleSearchClients}
+              disabled={isSearching}
+              className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-[#738390] px-5 text-sm font-semibold text-white transition hover:bg-[#80919e] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <Search size={16} />
+              {isSearching ? 'Buscando...' : 'Buscar estabelecimento'}
+            </button>
 
-              <button
-                type="button"
-                onClick={() => visitDatePickerRef.current?.showPicker?.()}
-                className="rounded-md border border-[#707070] bg-white/20 p-2 text-white transition hover:bg-[#e9e9e4]"
-                aria-label="Selecionar data da visita"
-              >
-                <CalendarDays size={16} />
-              </button>
-
-              <input
-                ref={visitDatePickerRef}
-                type="date"
-                className="sr-only"
-                onChange={(event) => {
-                  setFormError(null);
-                  setValue('date', formatDateToDisplay(event.target.value), {
-                    shouldDirty: true,
-                    shouldTouch: true,
-                  });
-                }}
-              />
-            </div>
-          </div>
-
-          <div className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
-            <input type="hidden" {...register('beforeImage')} />
-            <input type="hidden" {...register('afterImage')} />
-            <input type="hidden" {...register('clientId')} />
-
-            <div className="grid grid-cols-1 gap-3">
-              <VisitImageField
-                inputId="visit-before-image"
-                label="Imagem antes"
-                value={watchedBeforeImage}
-                onChange={(value) => {
-                  setFormError(null);
-                  setValue('beforeImage', value, {
-                    shouldDirty: true,
-                    shouldTouch: true,
-                    shouldValidate: true,
-                  });
-                }}
-              />
-
-              <VisitImageField
-                inputId="visit-after-image"
-                label="Imagem depois"
-                value={watchedAfterImage}
-                onChange={(value) => {
-                  setFormError(null);
-                  setValue('afterImage', value, {
-                    shouldDirty: true,
-                    shouldTouch: true,
-                    shouldValidate: true,
-                  });
-                }}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div className="mt-7 space-y-3">
-          {fields.map((field, productIndex) => (
-            <div key={field.id} className="space-y-3 rounded-lg border border-[#cfcfc86a] bg-white/10 p-3">
-              <div className="flex items-end justify-between gap-3">
-                <div className="flex-1 space-y-1">
-                  <label className="block text-sm font-medium">Produto</label>
-                  <input type="hidden" {...register(`products.${productIndex}.name`)} />
-                  <input type="hidden" {...register(`products.${productIndex}.packageType`)} />
-                  <ProductSelectField
-                    value={watchedProducts[productIndex]?.name ?? ''}
-                    onChange={(value) => {
-                      setFormError(null);
-                      setValue(`products.${productIndex}.name`, value, {
-                        shouldDirty: true,
-                        shouldTouch: true,
-                        shouldValidate: true,
-                      });
-                      setValue(`products.${productIndex}.packageType`, getPackageTypeByProductName(value), {
-                        shouldDirty: true,
-                        shouldTouch: true,
-                        shouldValidate: true,
-                      });
-                    }}
-                  />
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormError(null);
-
-                    if (fields.length === 1) {
-                      setValue('products', [
-                        {
-                          name: '',
-                          quantity: 0,
-                          packageType: 'unidade',
-                          expirationDate: '',
-                        },
-                      ], {
-                        shouldDirty: true,
-                        shouldTouch: true,
-                        shouldValidate: true,
-                      });
-                      return;
-                    }
-
-                    remove(productIndex);
-                  }}
-                  className="inline-flex h-8 items-center justify-center rounded-md border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 text-sm text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
-                  aria-label={`Excluir produto ${productIndex + 1}`}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 gap-3">
-                <div className="space-y-1">
-                  <label className="block text-sm font-medium">Quantidade</label>
-                  <input
-                    type="number"
-                    min="0"
-                    placeholder="Qtd"
-                    className="h-8 w-full rounded-md border border-[#707070] bg-white/20 px-2 text-center text-sm outline-none"
-                    {...register(`products.${productIndex}.quantity`, {
-                      valueAsNumber: true,
-                      onChange: (event) => {
-                        setFormError(null);
-
-                        if (Number(event.target.value) <= 0) {
-                          setValue(`products.${productIndex}.expirationDate`, '', {
-                            shouldDirty: true,
-                            shouldTouch: true,
-                            shouldValidate: true,
-                          });
-                        }
-                      },
-                    })}
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="block text-sm font-medium">Unidade de medida</label>
-                  <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/90">
-                    {getPackageTypeByProductName(watchedProducts[productIndex]?.name ?? '')}
+            {(selectedClient || watchedEstablishment) && (
+              <div className="mt-4 rounded-2xl border border-[#009c6c]/35 bg-[#009c6c]/10 p-4">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-full bg-[#009c6c]/20 p-2 text-[#c8ffe7]">
+                    <Building2 size={18} />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-semibold text-white">
+                      {selectedClient ? buildEstablishmentLabel(selectedClient) : watchedEstablishment}
+                    </p>
+                    {selectedClient && (
+                      <>
+                        <p className="mt-1 text-sm text-white/70">{buildClientSubtitle(selectedClient)}</p>
+                        <p className="mt-1 text-xs text-white/65">Documento: {selectedClient.document}</p>
+                      </>
+                    )}
                   </div>
                 </div>
-
-                <div className="space-y-1">
-                  <label className="block text-sm font-medium">Validade</label>
-                  {Number(watchedProducts[productIndex]?.quantity ?? 0) <= 0 ? (
-                    <div className="flex h-8 items-center rounded-md border border-[#707070] bg-[#355061] px-3 text-sm text-white/85">
-                      Quantidade zero dispensa validade
-                    </div>
-                  ) : (
-                    <ProductExpirationDateField
-                      value={watchedProducts[productIndex]?.expirationDate ?? ''}
-                      onChange={(value) => {
-                        setFormError(null);
-                        let v = value.replace(/\D/g, '');
-                        if (v.length > 8) v = v.slice(0, 8);
-                        if (v.length > 4) {
-                          v = `${v.slice(0, 2)}/${v.slice(2, 4)}/${v.slice(4)}`;
-                        } else if (v.length > 2) {
-                          v = `${v.slice(0, 2)}/${v.slice(2)}`;
-                        }
-                        setValue(`products.${productIndex}.expirationDate`, v, {
-                          shouldDirty: true,
-                          shouldTouch: true,
-                          shouldValidate: true,
-                        });
-                      }}
-                    />
-                  )}
-                </div>
+                <button
+                  type="button"
+                  onClick={clearSelectedClient}
+                  className="mt-3 text-xs font-semibold text-white underline underline-offset-2"
+                >
+                  Limpar selecao
+                </button>
               </div>
+            )}
+
+            {searchError && <p className="mt-4 text-sm text-red-200">{searchError}</p>}
+
+            {searchResults.length > 0 && (
+              <div className="mt-4 max-h-72 space-y-2 overflow-y-auto rounded-2xl border border-white/10 bg-black/10 p-2">
+                {searchResults.map((client) => (
+                  <button
+                    key={client.id}
+                    type="button"
+                    onClick={() => handleSelectClient(client)}
+                    className={`w-full rounded-2xl border px-4 py-3 text-left transition ${
+                      selectedClient?.id === client.id
+                        ? 'border-[#009c6c] bg-[#009c6c]/15'
+                        : 'border-white/10 bg-white/5 hover:bg-white/10'
+                    }`}
+                  >
+                    <p className="font-semibold text-white">{buildEstablishmentLabel(client)}</p>
+                    <p className="mt-1 text-sm text-white/75">{client.client_name}</p>
+                    <p className="mt-1 text-xs text-white/65">{buildClientSubtitle(client)}</p>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="grid gap-5 md:grid-cols-2">
+            <div>
+              <label htmlFor="visitDate" className="text-sm font-semibold text-white">
+                Data da visita
+              </label>
+              <div className="relative">
+                <input
+                  id="visitDate"
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="dd/mm/aaaa"
+                  className="mt-2 block w-full rounded-2xl border border-white/12 bg-white px-4 py-3 pr-12 text-gray-900 shadow-sm outline-none transition focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15"
+                  {...register('visitDate', {
+                    onChange: (event) => {
+                      setValue('visitDate', formatDateInput(event.target.value), {
+                        shouldDirty: true,
+                        shouldValidate: true,
+                      });
+                    },
+                  })}
+                />
+                <button
+                  type="button"
+                  onClick={() => visitDatePickerRef.current?.showPicker?.()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-[#0f2d3d] transition hover:bg-[#0f2d3d]/8"
+                  aria-label="Abrir calendario da data da visita"
+                >
+                  <CalendarDays size={18} />
+                </button>
+                <input
+                  ref={visitDatePickerRef}
+                  type="date"
+                  tabIndex={-1}
+                  className="pointer-events-none absolute h-0 w-0 opacity-0"
+                  value={displayDateToIso(watchedVisitDate ?? '') ?? ''}
+                  onChange={(event) => {
+                    setValue('visitDate', isoDateToDisplay(event.target.value), {
+                      shouldDirty: true,
+                      shouldValidate: true,
+                    });
+                  }}
+                />
+              </div>
+              {errors.visitDate && <p className="mt-2 text-sm text-red-200">{errors.visitDate.message}</p>}
             </div>
-          ))}
-        </div>
 
-        <div className="mt-5 flex justify-start">
-          <button
-            type="button"
-            onClick={() => {
-              setFormError(null);
-              append({
-                name: '',
-                quantity: 0,
-                packageType: 'unidade',
-                expirationDate: '',
-              });
-            }}
-            className="rounded-md border border-[#707070] bg-white/20 px-3 py-1.5 text-sm text-white transition hover:bg-[#e9e9e4]"
-          >
-            + Adicionar produto
-          </button>
-        </div>
+            <div>
+              <label className="text-sm font-semibold text-white">Estabelecimento selecionado</label>
+              <input
+                type="text"
+                readOnly
+                value={watchedEstablishment || ''}
+                className="mt-2 block w-full rounded-2xl border border-white/12 bg-white/80 px-4 py-3 text-gray-700 shadow-sm outline-none"
+                placeholder="Selecione um estabelecimento na busca acima"
+              />
+            </div>
+          </div>
 
-        {formError && (
-          <p className="mt-4 rounded-md border border-[#ffb3b3]/30 bg-[#5c1f1f]/45 px-3 py-2 text-sm text-[#ffe2e2]">
-            {formError}
-          </p>
-        )}
-
-        <div className="mt-7 flex flex-wrap justify-end gap-3">
-          {visitId && isDraft && (
-            <DeleteDraftButton
-              visitId={visitId}
-              className="min-w-28 rounded-md border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 py-1.5 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+          <div>
+            <label htmlFor="observation" className="text-sm font-semibold text-white">
+              Observacao
+            </label>
+            <textarea
+              id="observation"
+              rows={4}
+              className="mt-2 block w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-gray-900 shadow-sm outline-none transition focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15"
+              placeholder="Adicione observacoes relevantes sobre a visita"
+              {...register('observation')}
             />
+            {errors.observation && (
+              <p className="mt-2 text-sm text-red-200">{errors.observation.message}</p>
+            )}
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <VisitImageField id="before-image" label="Imagem antes" image={beforeImage} onChange={setBeforeImage} />
+            <VisitImageField id="after-image" label="Imagem depois" image={afterImage} onChange={setAfterImage} />
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-white">Produtos</h2>
+                <p className="mt-1 text-sm text-white/65">
+                  Adicione os produtos encontrados na visita. A lista comeca vazia por padrao.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  append({
+                    name: '',
+                    quantity: 0,
+                    unit: 'unidade',
+                    expirationDate: '',
+                  })
+                }
+                className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
+              >
+                Adicionar produto
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4">
+              {fields.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-white/15 px-4 py-6 text-sm text-white/65">
+                  Nenhum produto adicionado ainda.
+                </div>
+              ) : (
+                fields.map((field, index) => (
+                  <div key={field.id} className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="text-sm font-semibold text-white">Produto {index + 1}</p>
+                      <button
+                        type="button"
+                        onClick={() => remove(index)}
+                        className="inline-flex h-9 items-center justify-center rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 text-sm text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+                        aria-label={`Remover produto ${index + 1}`}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div>
+                        <label className="text-sm font-semibold text-white">Nome</label>
+                        <select
+                          className="mt-2 block w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-gray-900 shadow-sm outline-none transition focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15"
+                          {...register(`products.${index}.name`, {
+                            onChange: (event) => {
+                              setValue(`products.${index}.unit`, getProductUnit(event.target.value), {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              });
+                            },
+                          })}
+                        >
+                          <option value="">Selecione um produto</option>
+                          {PRODUCT_OPTIONS.map((productName) => (
+                            <option key={productName} value={productName}>
+                              {productName}
+                            </option>
+                          ))}
+                        </select>
+                        {errors.products?.[index]?.name && (
+                          <p className="mt-2 text-sm text-red-200">{errors.products[index]?.name?.message}</p>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-semibold text-white">Quantidade</label>
+                        <input
+                          type="number"
+                          min="0"
+                          className="mt-2 block w-full rounded-2xl border border-white/12 bg-white px-4 py-3 text-gray-900 shadow-sm outline-none transition focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15"
+                          {...register(`products.${index}.quantity`)}
+                        />
+                        {errors.products?.[index]?.quantity && (
+                          <p className="mt-2 text-sm text-red-200">{errors.products[index]?.quantity?.message}</p>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-semibold text-white">Unidade</label>
+                        <input
+                          readOnly
+                          value={getProductUnit(watchedProducts?.[index]?.name ?? '')}
+                          className="mt-2 block w-full rounded-2xl border border-white/12 bg-white/80 px-4 py-3 text-gray-700 shadow-sm outline-none"
+                        />
+                        <input type="hidden" {...register(`products.${index}.unit`)} />
+                      </div>
+
+                      <div>
+                        <label className="text-sm font-semibold text-white">Validade</label>
+                        <div className="relative">
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="dd/mm/aaaa"
+                            className="mt-2 block w-full rounded-2xl border border-white/12 bg-white px-4 py-3 pr-12 text-gray-900 shadow-sm outline-none transition focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15"
+                            {...register(`products.${index}.expirationDate`, {
+                              onChange: (event) => {
+                                setValue(`products.${index}.expirationDate`, formatDateInput(event.target.value), {
+                                  shouldDirty: true,
+                                  shouldValidate: true,
+                                });
+                              },
+                            })}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const picker = document.getElementById(`product-expiration-${field.id}`) as HTMLInputElement | null;
+                              picker?.showPicker?.();
+                            }}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-[#0f2d3d] transition hover:bg-[#0f2d3d]/8"
+                            aria-label={`Abrir calendario da validade do produto ${index + 1}`}
+                          >
+                            <CalendarDays size={18} />
+                          </button>
+                          <input
+                            id={`product-expiration-${field.id}`}
+                            type="date"
+                            tabIndex={-1}
+                            className="pointer-events-none absolute h-0 w-0 opacity-0"
+                            value={displayDateToIso(watchedProducts?.[index]?.expirationDate ?? '') ?? ''}
+                            onChange={(event) => {
+                              setValue(`products.${index}.expirationDate`, isoDateToDisplay(event.target.value), {
+                                shouldDirty: true,
+                                shouldValidate: true,
+                              });
+                            }}
+                          />
+                        </div>
+                        {errors.products?.[index]?.expirationDate && (
+                          <p className="mt-2 text-sm text-red-200">
+                            {errors.products[index]?.expirationDate?.message}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {watchedProducts?.length > 0 && (
+              <p className="mt-4 text-xs text-white/55">
+                Todos os produtos enviados precisam ter nome, quantidade, unidade e validade.
+              </p>
+            )}
+          </div>
+
+          <input
+            type="hidden"
+            value={typeof watchedEstablishmentId === 'number' ? String(watchedEstablishmentId) : ''}
+            {...register('establishmentId')}
+          />
+          <input type="hidden" {...register('establishmentLabel')} />
+
+          <div className="flex flex-wrap justify-end gap-3">
+            {visitId && isDraft && (
+              <DeleteDraftButton
+                visitId={visitId}
+                redirectTo={homePath}
+                className="rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 py-3 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+              />
+            )}
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              onClick={() => setSubmitMode('draft')}
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isSubmitting && submitMode === 'draft' ? 'Salvando rascunho...' : 'Salvar rascunho'}
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              onClick={() => setSubmitMode('final')}
+              className="rounded-xl bg-[#009c6c] px-5 py-3 text-sm font-bold text-white shadow-[0_12px_30px_rgba(0,156,108,0.28)] transition hover:bg-[#00b57d] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isSubmitting && submitMode === 'final'
+                ? 'Enviando...'
+                : isDraft
+                  ? 'Publicar visita'
+                  : visitId
+                    ? 'Salvar alteracoes'
+                    : 'Enviar visita'}
+            </button>
+          </div>
+
+          {formError && (
+            <div className="rounded-2xl border border-red-300/35 bg-red-500/10 px-4 py-3 text-sm text-red-100">
+              {formError}
+            </div>
           )}
-          <button
-            type="button"
-            onClick={() => void handleSaveDraft()}
-            className="min-w-28 rounded-md border border-white/20 bg-white/10 px-4 py-1.5 text-sm text-white transition hover:bg-white/20"
-          >
-            Salvar rascunho
-          </button>
-          <button
-            type="submit"
-            disabled={isSubmitting}
-            className="min-w-28 rounded-md border border-[#707070] bg-white/20 px-4 py-1.5 text-sm text-white transition hover:bg-[#e9e9e4]"
-          >
-            {isSubmitting ? 'Salvando...' : isDraft ? 'Publicar visita' : visitId ? 'Salvar alterações' : 'Enviar'}
-          </button>
-        </div>
-      </form>
+        </form>
+      </div>
     </section>
   );
 }

@@ -58,8 +58,9 @@ export default async function NewVisitPage({ searchParams }: NewVisitPageProps) 
       <NewVisitForm
         initialClient={initialClient}
         initialData={{
-          establishment:
+          establishmentLabel:
             initialClient?.nickname || initialClient?.fantasy_name || initialClient?.client_name || '',
+          establishmentId: initialClient?.id ?? null,
         }}
       />
     </main>

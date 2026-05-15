@@ -31,16 +31,14 @@ const signupSchema = loginSchema.extend({
   path: ['confirmPassword'],
 });
 
-function parseDisplayDateParts(value: string) {
-  const trimmedValue = value.trim();
-
-  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(trimmedValue)) {
+function parseIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return null;
   }
 
-  const [day, month, year] = trimmedValue.split('/').map(Number);
+  const [year, month, day] = value.split('-').map(Number);
 
-  if (!day || !month || !year) {
+  if (!year || !month || !day) {
     return null;
   }
 
@@ -54,67 +52,66 @@ function parseDisplayDateParts(value: string) {
     return null;
   }
 
-  return { day, month, year };
+  return date;
 }
 
-function isTodayOrFutureDisplayDate(value: string) {
-  const parts = parseDisplayDateParts(value);
+function addMonths(date: Date, months: number) {
+  return new Date(date.getFullYear(), date.getMonth() + months, date.getDate());
+}
 
-  if (!parts) {
+function isExpirationWithinVisitWindow(visitDate: string, expirationDate: string) {
+  const parsedVisitDate = parseIsoDate(visitDate);
+  const parsedExpirationDate = parseIsoDate(expirationDate);
+
+  if (!parsedVisitDate || !parsedExpirationDate) {
     return false;
   }
 
-  const date = new Date(parts.year, parts.month - 1, parts.day);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  date.setHours(0, 0, 0, 0);
-
-  return date.getTime() >= today.getTime();
+  return parsedExpirationDate.getTime() <= addMonths(parsedVisitDate, 18).getTime();
 }
 
 const visitProductSchema = z.object({
   name: z.string().min(1),
   quantity: z.number().min(0),
-  packageType: z.enum(['unidade', 'pack', 'caixa']),
-  expirationDate: z.string(),
-}).superRefine((product, ctx) => {
-  if (product.quantity === 0) {
-    return;
-  }
+  unit: z.enum(['unidade', 'pack', 'caixa']),
+  expirationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
 
-  if (!isTodayOrFutureDisplayDate(product.expirationDate)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Data de validade invalida ou anterior a hoje.',
-      path: ['expirationDate'],
-    });
-  }
+const visitImageSchema = z.object({
+  filename: z.string().trim().min(1),
+  contentType: z.string().trim().min(1),
+  base64: z.string().trim().min(1),
 });
 
 const visitSchema = z.object({
-  establishment: z.string().min(1),
-  clientId: z.string().trim().min(1),
-  date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
-  products: z.array(visitProductSchema).min(1),
-  beforeImage: z.string().trim().optional().default(''),
-  afterImage: z.string().trim().optional().default(''),
+  establishment: z.number().int().positive().nullable().optional(),
+  visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  products: z.array(visitProductSchema).optional().default([]),
+  isDraft: z.boolean().optional(),
+  beforeImage: z.union([z.string().trim(), visitImageSchema, z.null()]).optional(),
+  afterImage: z.union([z.string().trim(), visitImageSchema, z.null()]).optional(),
+  observation: z.string().trim().nullable().optional(),
+}).superRefine((visit, ctx) => {
+  if (!visit.visitDate) {
+    return;
+  }
+
+  visit.products.forEach((product, index) => {
+    if (product.quantity === 0) {
+      return;
+    }
+
+    if (!isExpirationWithinVisitWindow(visit.visitDate as string, product.expirationDate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A validade deve ser uma data valida e nao pode passar de 18 meses apos a visita.',
+        path: ['products', index, 'expirationDate'],
+      });
+    }
+  });
 });
 
-const visitDraftSchema = z.object({
-  establishment: z.string().trim().optional().default(''),
-  clientId: z.string().trim().optional().default(''),
-  date: z.string().trim().optional().default(''),
-  products: z.array(
-    z.object({
-      name: z.string().trim().optional().default(''),
-      quantity: z.number().optional().default(0),
-      packageType: z.enum(['unidade', 'pack', 'caixa']).optional().default('unidade'),
-      expirationDate: z.string().trim().optional().default(''),
-    })
-  ).optional().default([]),
-  beforeImage: z.string().trim().optional().default(''),
-  afterImage: z.string().trim().optional().default(''),
-});
+const visitDraftSchema = visitSchema;
 
 const clientSearchSchema = z.object({
   clientId: z.string().trim().optional().default(''),
@@ -165,16 +162,6 @@ const commercialSubmissionSchema = z.object({
 const commercialSubmissionUpdateSchema = commercialSubmissionSchema.extend({
   submissionId: z.coerce.number().int().positive(),
 });
-
-function parseDisplayDateToDatabase(value: string) {
-  const parts = parseDisplayDateParts(value);
-
-  if (!parts) {
-    return null;
-  }
-
-  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
-}
 
 function normalizeDigits(value: string) {
   return value.replace(/\D/g, '');
@@ -237,27 +224,15 @@ async function getCurrentPromotorId() {
 }
 
 function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['products']) {
-  return products
-    .filter((product) => {
-      return (
-        product.name.trim() &&
-        Number.isFinite(Number(product.quantity)) &&
-        Number(product.quantity) >= 0 &&
-        (
-          Number(product.quantity) === 0 ||
-          isTodayOrFutureDisplayDate(product.expirationDate.trim())
-        )
-      );
-    })
-    .map((product) => ({
-      name: product.name.trim(),
-      quantity: Number(product.quantity) || 0,
-      unit: product.packageType,
-      expirationDate: parseDisplayDateToDatabase(product.expirationDate.trim()) ?? product.expirationDate.trim(),
-    }));
+  return products.filter((product) => {
+    return (
+      product.name.trim() &&
+      Number.isFinite(Number(product.quantity)) &&
+      Number(product.quantity) >= 0 &&
+      /^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate)
+    );
+  });
 }
-
-const EMPTY_IMAGE_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs=';
 
 export async function login(data: z.infer<typeof loginSchema>) {
   const validation = loginSchema.safeParse(data);
@@ -624,53 +599,38 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
     return { success: false, error: 'Dados da visita invalidos.' };
   }
 
-  const visitDate = parseDisplayDateToDatabase(validation.data.date);
-
-  if (!visitDate) {
-    return { success: false, error: 'Data da visita invalida.' };
+  if (!validation.data.establishment) {
+    return { success: false, error: 'Selecione um estabelecimento valido antes de enviar a visita.' };
   }
 
-  const products = validation.data.products.map((product) => {
-    return {
-      name: product.name,
-      quantity: product.quantity,
-      unit: product.packageType,
-      expirationDate: parseDisplayDateToDatabase(product.expirationDate) ?? product.expirationDate,
-    };
-  });
-
-  const establishmentId = Number(validation.data.clientId);
-  const establishmentName = validation.data.establishment.trim();
-
-  if (!Number.isFinite(establishmentId) || establishmentId <= 0) {
-    return { success: false, error: 'Selecione um estabelecimento valido antes de enviar a visita.' };
+  if (!validation.data.visitDate) {
+    return { success: false, error: 'Informe uma data de visita valida.' };
   }
 
   try {
     const payload = {
-      establishment: establishmentId,
-      establishmentName: establishmentName || undefined,
-      date: visitDate,
-      products,
-      beforeImage: validation.data.beforeImage || EMPTY_IMAGE_PLACEHOLDER,
-      afterImage: validation.data.afterImage || EMPTY_IMAGE_PLACEHOLDER,
+      establishment: validation.data.establishment,
+      visitDate: validation.data.visitDate,
+      products: validation.data.products,
+      beforeImage: validation.data.beforeImage ?? null,
+      afterImage: validation.data.afterImage ?? null,
+      observation: validation.data.observation ?? null,
       isDraft: false,
     };
 
-    if (visitId) {
-      await updatePromotorVisit(session.accessToken, visitId, payload);
-    } else {
-      await createPromotorVisit(session.accessToken, payload);
-    }
+    const savedVisit = visitId
+      ? await updatePromotorVisit(session.accessToken, visitId, payload)
+      : await createPromotorVisit(session.accessToken, payload);
+    const nextVisitId = savedVisit?.id ?? visitId;
 
     revalidatePath('/');
     revalidatePath('/visitas/nova');
-    if (visitId) {
-      revalidatePath(`/visitas/${visitId}`);
-      revalidatePath(`/visitas/${visitId}/editar`);
+    if (nextVisitId) {
+      revalidatePath(`/visitas/${nextVisitId}`);
+      revalidatePath(`/visitas/${nextVisitId}/editar`);
     }
 
-    return { success: true };
+    return { success: true, visitId: nextVisitId };
   } catch (error) {
     console.error('Create visit API error:', error);
     if (error instanceof ApiError) {
@@ -696,25 +656,16 @@ export async function saveVisitDraft(
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 
-  const establishmentId = Number(validation.data.clientId);
-  const establishmentName = validation.data.establishment.trim();
-  const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
-    ? parseDisplayDateToDatabase(validation.data.date)
-    : null;
   const draftProducts = normalizeDraftProducts(validation.data.products);
-
-  if (!Number.isFinite(establishmentId) || establishmentId <= 0) {
-    return { success: false, error: 'Selecione um estabelecimento valido antes de salvar o rascunho.' };
-  }
 
   try {
     const payload = {
-      establishment: establishmentId,
-      establishmentName: establishmentName || undefined,
-      date: visitDate ?? '',
+      establishment: validation.data.establishment ?? null,
+      visitDate: validation.data.visitDate ?? null,
       products: draftProducts,
-      beforeImage: validation.data.beforeImage || EMPTY_IMAGE_PLACEHOLDER,
-      afterImage: validation.data.afterImage || EMPTY_IMAGE_PLACEHOLDER,
+      beforeImage: validation.data.beforeImage ?? null,
+      afterImage: validation.data.afterImage ?? null,
+      observation: validation.data.observation ?? null,
       isDraft: true,
     };
 

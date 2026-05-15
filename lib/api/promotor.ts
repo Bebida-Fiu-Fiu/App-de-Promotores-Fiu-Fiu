@@ -222,17 +222,21 @@ function normalizeAuthResultWithHeaders(payload: unknown, headers: Headers): Aut
 
 function normalizeVisitProduct(payload: unknown): PromotorVisitProduct {
   const record = isRecord(payload) ? payload : {};
+  const unit = toStringValue(record.unit ?? record.packageType, 'unidade');
 
   return {
     name: toStringValue(record.name),
     quantity: toNumber(record.quantity),
-    unit: toStringValue(record.unit ?? record.packageType, 'unidade'),
+    unit: unit === 'pack' || unit === 'caixa' ? unit : 'unidade',
     expirationDate: toStringValue(record.expirationDate ?? record.expiration_date),
   };
 }
 
 function normalizeVisit(payload: unknown): PromotorVisit {
   const record = isRecord(payload) ? payload : {};
+  const establishmentId = toNullableNumber(
+    record.establishmentId ?? record.establishment_id ?? record.clientId ?? record.client_id ?? record.establishment
+  );
   const rawEstablishment =
     record.establishmentName ??
     record.establishment_name ??
@@ -245,6 +249,7 @@ function normalizeVisit(payload: unknown): PromotorVisit {
   return {
     id: toNumber(record.id),
     promotorId: toNullableNumber(record.promotorId ?? record.promotor_id),
+    establishmentId,
     establishment:
       typeof rawEstablishment === 'number'
         ? String(rawEstablishment)
@@ -253,6 +258,7 @@ function normalizeVisit(payload: unknown): PromotorVisit {
     products: Array.isArray(record.products) ? record.products.map(normalizeVisitProduct) : [],
     beforeImage: toStringValue(record.beforeImage ?? record.before_image),
     afterImage: toStringValue(record.afterImage ?? record.after_image),
+    observation: toNullableString(record.observation ?? record.observacao),
     isDraft: Boolean(record.isDraft ?? record.is_draft),
     canEdit:
       typeof record.canEdit === 'boolean'
