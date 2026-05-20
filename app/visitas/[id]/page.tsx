@@ -70,6 +70,7 @@ export default async function VisitDetailsPage({
       | {
         establishment: string;
         visitDate: string;
+        observation: string;
         products: VisitProduct[];
         beforeImages: string[];
         afterImages: string[];

@@ -43,6 +43,14 @@ function formatDatabaseDateToDisplay(value: string | Date | null) {
   return date.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
 }
 
+function getPackageTypeForProduct(productName: string, unit?: string): EditableVisitProduct['packageType'] {
+  if (unit === 'pack') {
+    return 'pack';
+  }
+
+  return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
+}
+
 export default async function EditVisitPage({
   params,
 }: {
