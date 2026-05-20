@@ -69,6 +69,37 @@ describe('promotor api', () => {
     expect(parsedBody).not.toHaveProperty('afterImage');
   });
 
+  it('keeps indefinido as expirationDate when creating a visit', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ id: 99 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await createPromotorVisit('token-123', {
+      establishment: 321,
+      visitDate: '2026-05-20',
+      products: [
+        {
+          name: 'Licor Banoffe',
+          quantity: 0,
+          unit: 'unidade',
+          expirationDate: 'indefinido',
+        },
+      ],
+      observation: null,
+      isDraft: false,
+    });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    const parsedBody = JSON.parse(String(init?.body)) as {
+      products: Array<{ expirationDate: string }>;
+    };
+
+    expect(parsedBody.products[0]?.expirationDate).toBe('indefinido');
+  });
+
   it('reads beforeImages and afterImages from the nested visit response on create', async () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(

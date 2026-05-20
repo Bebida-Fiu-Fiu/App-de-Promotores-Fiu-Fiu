@@ -321,8 +321,15 @@ function buildPromotorVisitApiPayload(payload: PromotorVisitPayload) {
       name: product.name,
       quantity: product.quantity,
       unit: product.unit,
-      expirationDate:
-        /^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate) ? product.expirationDate : fallbackVisitDate,
+      expirationDate: (() => {
+        const normalizedExpirationDate = product.expirationDate.trim().toLowerCase();
+
+        if (normalizedExpirationDate === 'indefinido') {
+          return 'indefinido';
+        }
+
+        return /^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate) ? product.expirationDate : fallbackVisitDate;
+      })(),
     })),
     beforeImages,
     afterImages,
