@@ -5,14 +5,7 @@ import { type SessionUser } from '@/types/auth';
 import { listVisitsReportByPromotorId } from '@/lib/api/promotor';
 import { getPromotorIdFromSession } from '@/lib/auth';
 import { getHeaderFullName } from '@/lib/header-user';
-
-type VisitListItem = {
-  id: number;
-  establishment: string;
-  visitDate: string;
-  isDraft: boolean;
-  canEdit: boolean;
-};
+import type { PromotorVisit } from '@/types/promotor';
 
 type HomePageContentProps = {
   accessToken: string;
@@ -20,22 +13,12 @@ type HomePageContentProps = {
   page: number;
 };
 
-function formatDatabaseDateToDisplay(value: string | Date) {
-  const date = value instanceof Date ? value : new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return String(value);
-  }
-
-  return date.toLocaleDateString('pt-BR', { timeZone: 'UTC' });
-}
-
 function getRoleLabel(role: SessionUser['role']) {
   return role === 'comercial' ? 'Comercial' : 'Promotor';
 }
 
 export async function HomePageContent({ accessToken, user, page }: HomePageContentProps) {
-  let visits: VisitListItem[] = [];
+  let visits: PromotorVisit[] = [];
   let fullName: string | null = user.fullName;
   let hasNextPage = false;
   let totalVisits: number | null = null;
@@ -52,17 +35,9 @@ export async function HomePageContent({ accessToken, user, page }: HomePageConte
         page,
         pageSize: 10,
       });
-      const promotorVisits = visitsReport.items;
+      visits = visitsReport.items;
       hasNextPage = visitsReport.hasNextPage;
       totalVisits = visitsReport.total;
-
-      visits = promotorVisits.map((visit) => ({
-        id: visit.id,
-        establishment: visit.establishment || 'Rascunho sem estabelecimento',
-        visitDate: visit.visitDate ? formatDatabaseDateToDisplay(visit.visitDate) : 'Data nao definida',
-        isDraft: visit.isDraft,
-        canEdit: visit.canEdit,
-      }));
     }
   } catch (error) {
     console.error('Home API lookup error:', error);

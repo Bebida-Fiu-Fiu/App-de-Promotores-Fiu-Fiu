@@ -4,14 +4,25 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { Building2, CalendarDays, ImageIcon, Search, Trash2 } from 'lucide-react';
 import Image from 'next/image';
 import { useRouter } from 'next/navigation';
-import { startTransition, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import {
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Dispatch,
+  type SetStateAction,
+} from 'react';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
+import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
 import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
-import { fileToVisitImageUpload } from '@/lib/file-utils';
-import type { PromotorVisitImageInput, PromotorVisitProduct } from '@/types/promotor';
+import { mapFilesToUploadPayload } from '@/lib/file-utils';
+import type { PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
   'Cajazinha',
@@ -32,8 +43,36 @@ const PRODUCT_OPTIONS = [
   'Licor Paçoca',
 ] as const;
 
+const INDEFINITE_EXPIRATION_LABEL = 'indefinido';
+
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
 function getProductUnit(productName: string): 'unidade' | 'pack' {
   return productName.trim().toUpperCase().startsWith('ICE') ? 'pack' : 'unidade';
+}
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function isIndefiniteExpirationValue(value: string) {
+  return value.trim().toLowerCase() === INDEFINITE_EXPIRATION_LABEL;
+}
+
+function shouldUseIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
 }
 
 const visitProductSchema = z.object({
@@ -96,17 +135,20 @@ type ClientSearchResult = {
 type InitialClientData = ClientSearchResult;
 
 type VisitImageState = {
+  id: string;
   previewUrl: string;
   existingValue: string | null;
   file: File | null;
 };
 
+type VisitImageGalleryState = VisitImageState[];
+
 type NewVisitFormProps = {
   visitId?: number;
   isDraft?: boolean;
   initialData?: Partial<VisitFormValues> & {
-    beforeImage?: string;
-    afterImage?: string;
+    beforeImages?: string[];
+    afterImages?: string[];
   };
   initialClient?: InitialClientData | null;
 };
@@ -220,6 +262,10 @@ function buildClientSubtitle(client: ClientSearchResult) {
     .join(', ');
 }
 
+function buildClientSecondaryLabel(client: ClientSearchResult) {
+  return client.fantasy_name?.trim() || client.client_name;
+}
+
 function isBlankProduct(product: VisitFormValues['products'][number]) {
   return (
     !product.name.trim() &&
@@ -235,7 +281,7 @@ function isCompleteProduct(product: VisitFormValues['products'][number]) {
     Number.isFinite(product.quantity) &&
     product.quantity >= 0 &&
     product.unit &&
-    isValidDisplayDate(product.expirationDate)
+    (isIndefiniteExpirationValue(product.expirationDate) || isValidDisplayDate(product.expirationDate))
   );
 }
 
@@ -245,6 +291,14 @@ function getFriendlyApiMessage(error: string | null | undefined) {
   }
 
   const normalizedError = error.toLowerCase();
+
+  if (
+    normalizedError.includes('body exceeded') ||
+    normalizedError.includes('413') ||
+    normalizedError.includes('payload too large')
+  ) {
+    return 'As fotos selecionadas ainda estao muito pesadas para envio. Tente menos imagens por vez ou arquivos menores.';
+  }
 
   if (normalizedError.includes('unauthorized') || normalizedError.includes('sessao')) {
     return 'Sua sessao expirou. Entre novamente para continuar.';
@@ -269,53 +323,76 @@ function getFriendlyApiMessage(error: string | null | undefined) {
   return error;
 }
 
-async function buildImagePayload(image: VisitImageState): Promise<PromotorVisitImageInput> {
-  if (image.file) {
-    return fileToVisitImageUpload(image.file);
-  }
-
-  if (image.existingValue) {
-    return image.existingValue;
-  }
-
-  return null;
+function buildImageItemId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function VisitImageField({
-  id,
+function createImageState(previewUrl: string, existingValue: string | null, file: File | null): VisitImageState {
+  return {
+    id: buildImageItemId(),
+    previewUrl,
+    existingValue,
+    file,
+  };
+}
+
+function buildInitialGalleryState(images: string[] | undefined) {
+  return (Array.isArray(images) ? images : [])
+    .filter((imageUrl) => Boolean(imageUrl))
+    .map((imageUrl) => createImageState(imageUrl, imageUrl, null));
+}
+
+async function mapGalleryToPayload(images: VisitImageGalleryState): Promise<PromotorVisitImageArrayInput> {
+  const existingImages = images
+    .map((image) => image.existingValue)
+    .filter((image): image is string => Boolean(image));
+  const newFiles = images
+    .map((image) => image.file)
+    .filter((file): file is File => file instanceof File);
+  const uploadedFiles = await mapFilesToUploadPayload(newFiles);
+
+  return [...existingImages, ...uploadedFiles];
+}
+
+function VisitImageGalleryField({
+  idPrefix,
   label,
-  image,
+  helperText,
+  images,
   onChange,
 }: {
-  id: string;
+  idPrefix: string;
   label: string;
-  image: VisitImageState;
-  onChange: (nextValue: VisitImageState) => void;
+  helperText: string;
+  images: VisitImageGalleryState;
+  onChange: (nextValue: VisitImageGalleryState) => void;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [fieldError, setFieldError] = useState<string | null>(null);
+  const [selectedImageIndex, setSelectedImageIndex] = useState<number | null>(null);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = event.target.files?.[0];
+    const selectedFiles = Array.from(event.target.files ?? []);
 
-    if (!selectedFile) {
+    if (selectedFiles.length === 0) {
       return;
     }
 
-    if (!selectedFile.type.startsWith('image/')) {
+    const invalidFile = selectedFiles.find((file) => !file.type.startsWith('image/'));
+
+    if (invalidFile) {
       setFieldError('Selecione um arquivo de imagem valido.');
       event.target.value = '';
       return;
     }
 
     setFieldError(null);
-
-    const objectUrl = URL.createObjectURL(selectedFile);
-    onChange({
-      previewUrl: objectUrl,
-      existingValue: null,
-      file: selectedFile,
-    });
+    onChange([
+      ...images,
+      ...selectedFiles.map((selectedFile) =>
+        createImageState(URL.createObjectURL(selectedFile), null, selectedFile)
+      ),
+    ]);
 
     event.target.value = '';
   };
@@ -324,68 +401,84 @@ function VisitImageField({
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <ImageIcon size={16} />
-        <label htmlFor={id} className="text-sm font-medium text-white">
+        <label htmlFor={`${idPrefix}-input`} className="text-sm font-medium text-white">
           {label}
         </label>
       </div>
 
       <input
         ref={inputRef}
-        id={id}
+        id={`${idPrefix}-input`}
         type="file"
         accept="image/*"
+        multiple
         className="sr-only"
         onChange={handleFileChange}
       />
 
-      {image.previewUrl ? (
-        <div className="overflow-hidden rounded-2xl border border-white/12 bg-white/5">
-          <Image
-            src={image.previewUrl}
-            alt={`Preview ${label.toLowerCase()}`}
-            width={1200}
-            height={900}
-            unoptimized
-            className="h-44 w-full object-cover"
-          />
-          <div className="flex items-center justify-between gap-2 border-t border-white/10 p-3">
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20"
-            >
-              Trocar imagem
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                onChange({
-                  previewUrl: '',
-                  existingValue: null,
-                  file: null,
-                })
-              }
-              className="rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 py-2 text-xs font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
-            >
-              Remover
-            </button>
-          </div>
-        </div>
-      ) : (
+      <div className="rounded-2xl border border-white/12 bg-white/5 p-3">
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
-          className="flex h-44 w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/20 bg-white/5 px-4 text-center transition hover:bg-white/10"
+          className="flex h-32 w-full flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-white/20 bg-white/5 px-4 text-center transition hover:bg-white/10"
         >
           <ImageIcon size={22} className="text-white/65" />
           <div>
-            <p className="text-sm font-semibold text-white">Adicionar {label.toLowerCase()}</p>
-            <p className="mt-1 text-xs text-white/60">Selecione uma foto para enviar junto da visita</p>
+            <p className="text-sm font-semibold text-white">Adicionar fotos de {label.toLowerCase()}</p>
+            <p className="mt-1 text-xs text-white/60">{helperText}</p>
           </div>
         </button>
-      )}
+
+        {images.length > 0 ? (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {images.map((image, index) => (
+              <div key={image.id} className="overflow-hidden rounded-2xl border border-white/12 bg-white/5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedImageIndex(index)}
+                  className="block w-full overflow-hidden"
+                  aria-label={`Abrir foto de ${label.toLowerCase()} ${index + 1}`}
+                >
+                  <Image
+                    src={image.previewUrl}
+                    alt={`${label} ${index + 1}`}
+                    width={1200}
+                    height={900}
+                    unoptimized
+                    className="h-32 w-full object-cover transition hover:scale-[1.02]"
+                  />
+                </button>
+                <div className="flex items-center justify-between gap-2 border-t border-white/10 p-3">
+                  <span className="text-xs font-medium text-white/70">
+                    {image.file ? 'Nova foto' : 'Foto salva'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onChange(images.filter((currentImage) => currentImage.id !== image.id))}
+                    className="rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-3 py-2 text-xs font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
+                  >
+                    Remover
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-xs text-white/55">
+            Nenhuma foto adicionada para {label.toLowerCase()}.
+          </p>
+        )}
+      </div>
 
       {fieldError && <p className="text-xs text-red-200">{fieldError}</p>}
+
+      <VisitImageLightbox
+        images={images.map((image) => image.previewUrl)}
+        altPrefix={`Imagem de ${label.toLowerCase()}`}
+        selectedIndex={selectedImageIndex}
+        onClose={() => setSelectedImageIndex(null)}
+        onSelect={setSelectedImageIndex}
+      />
     </div>
   );
 }
@@ -398,10 +491,13 @@ export function NewVisitForm({
 }: NewVisitFormProps) {
   const router = useRouter();
   const visitDatePickerRef = useRef<HTMLInputElement | null>(null);
+  const beforeImagesRef = useRef<VisitImageGalleryState>([]);
+  const afterImagesRef = useRef<VisitImageGalleryState>([]);
   const [homePath, setHomePath] = useState('/promotor');
   const [formError, setFormError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [submitMode, setSubmitMode] = useState<'draft' | 'final' | null>(null);
+  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
     clientId: '',
     clientName: '',
@@ -419,16 +515,12 @@ export function NewVisitForm({
   const [clientSearchMode, setClientSearchMode] = useState<'agenda' | 'general'>('agenda');
   const [showAdvancedAgendaSearch, setShowAdvancedAgendaSearch] = useState(false);
   const [selectedClient, setSelectedClient] = useState<ClientSearchResult | null>(initialClient);
-  const [beforeImage, setBeforeImage] = useState<VisitImageState>({
-    previewUrl: initialData?.beforeImage ?? '',
-    existingValue: initialData?.beforeImage ?? null,
-    file: null,
-  });
-  const [afterImage, setAfterImage] = useState<VisitImageState>({
-    previewUrl: initialData?.afterImage ?? '',
-    existingValue: initialData?.afterImage ?? null,
-    file: null,
-  });
+  const [beforeImages, setBeforeImages] = useState<VisitImageGalleryState>(
+    buildInitialGalleryState(initialData?.beforeImages)
+  );
+  const [afterImages, setAfterImages] = useState<VisitImageGalleryState>(
+    buildInitialGalleryState(initialData?.afterImages)
+  );
 
   const defaultValues = useMemo<VisitFormInput>(() => ({
     establishmentId: initialData?.establishmentId ?? initialClient?.id ?? null,
@@ -489,16 +581,84 @@ export function NewVisitForm({
   }, []);
 
   useEffect(() => {
+    beforeImagesRef.current = beforeImages;
+  }, [beforeImages]);
+
+  useEffect(() => {
+    afterImagesRef.current = afterImages;
+  }, [afterImages]);
+
+  useEffect(() => {
     return () => {
-      if (beforeImage.file && beforeImage.previewUrl) {
-        URL.revokeObjectURL(beforeImage.previewUrl);
+      beforeImagesRef.current.forEach((image) => {
+        if (image.file && image.previewUrl) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+      });
+
+      afterImagesRef.current.forEach((image) => {
+        if (image.file && image.previewUrl) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+      });
+    };
+  }, []);
+
+  const syncGalleryState = (
+    setGallery: Dispatch<SetStateAction<VisitImageGalleryState>>,
+    nextImages: VisitImageGalleryState
+  ) => {
+    setGallery((currentImages) => {
+      currentImages.forEach((image) => {
+        const stillExists = nextImages.some((nextImage) => nextImage.id === image.id);
+
+        if (!stillExists && image.file && image.previewUrl) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+      });
+
+      return nextImages;
+    });
+  };
+
+  const handleBeforeImagesChange = (nextImages: VisitImageGalleryState) => {
+    syncGalleryState(setBeforeImages, nextImages);
+  };
+
+  const handleAfterImagesChange = (nextImages: VisitImageGalleryState) => {
+    syncGalleryState(setAfterImages, nextImages);
+  };
+
+  useEffect(() => {
+    watchedProducts?.forEach((product, index) => {
+      if (!product) {
+        return;
       }
 
-      if (afterImage.file && afterImage.previewUrl) {
-        URL.revokeObjectURL(afterImage.previewUrl);
+      const shouldUseIndefinite = shouldUseIndefiniteExpiration(
+        product.name ?? '',
+        Number(product.quantity ?? 0)
+      );
+      const currentExpiration = product.expirationDate ?? '';
+
+      if (shouldUseIndefinite && currentExpiration !== INDEFINITE_EXPIRATION_LABEL) {
+        setValue(`products.${index}.expirationDate`, INDEFINITE_EXPIRATION_LABEL, {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
       }
-    };
-  }, [afterImage, beforeImage]);
+
+      if (
+        !shouldUseIndefinite &&
+        isIndefiniteExpirationValue(currentExpiration)
+      ) {
+        setValue(`products.${index}.expirationDate`, '', {
+          shouldDirty: true,
+          shouldValidate: true,
+        });
+      }
+    });
+  }, [setValue, watchedProducts]);
 
   const handleFilterChange = (field: keyof ClientSearchFilters, value: string) => {
     setSearchFilters((current) => ({
@@ -586,6 +746,7 @@ export function NewVisitForm({
       (product) =>
         !isBlankProduct(product) &&
         isCompleteProduct(product) &&
+        !isIndefiniteExpirationValue(product.expirationDate) &&
         !isExpirationWithinVisitWindow(values.visitDate, product.expirationDate)
     );
 
@@ -609,54 +770,71 @@ export function NewVisitForm({
 
     const visitDateIso = values.visitDate ? displayDateToIso(values.visitDate) : null;
 
-    const payload = {
-      establishment: values.establishmentId,
-      visitDate: visitDateIso,
-      products: values.products
-        .filter((product) => isCompleteProduct(product))
-        .map((product) => ({
-          ...product,
-          expirationDate: displayDateToIso(product.expirationDate) ?? product.expirationDate,
-        })) as PromotorVisitProduct[],
-      observation: values.observation.trim() || null,
-      beforeImage: await buildImagePayload(beforeImage),
-      afterImage: await buildImagePayload(afterImage),
-      isDraft: mode === 'draft',
-    };
+    try {
+      const payload = {
+        establishment: values.establishmentId,
+        visitDate: visitDateIso,
+        products: values.products
+          .filter((product) => isCompleteProduct(product))
+          .map((product) => ({
+            ...product,
+            expirationDate: isIndefiniteExpirationValue(product.expirationDate)
+              ? INDEFINITE_EXPIRATION_LABEL
+              : (displayDateToIso(product.expirationDate) ?? product.expirationDate),
+          })) as PromotorVisitProduct[],
+        observation: values.observation.trim() || null,
+        beforeImages: await mapGalleryToPayload(beforeImages),
+        afterImages: await mapGalleryToPayload(afterImages),
+        isDraft: mode === 'draft',
+      } as const;
 
-    const result =
-      mode === 'draft'
-        ? await saveVisitDraft(payload, visitId)
-        : await createVisit(payload, visitId);
+      const result =
+        mode === 'draft'
+          ? await saveVisitDraft(payload, visitId)
+          : await createVisit(payload, visitId);
 
-    if (!result.success) {
-      setFormError(getFriendlyApiMessage(result.error));
-      return;
-    }
+      if (!result.success) {
+        setFormError(getFriendlyApiMessage(result.error));
 
-    const successCopy =
-      mode === 'draft' ? 'Rascunho salvo com sucesso.' : 'Visita salva com sucesso.';
-    setSuccessMessage(successCopy);
+        if (result.shouldRedirectToLogin) {
+          router.replace('/login');
+        }
 
-    const nextVisitId = result.visitId ?? visitId;
+        return;
+      }
 
-    if (!nextVisitId && mode === 'final') {
-      reset({
-        establishmentId: null,
-        establishmentLabel: '',
-        visitDate: getTodayDisplayDate(),
-        observation: '',
-        products: [],
-      });
-      setSelectedClient(null);
-      setBeforeImage({ previewUrl: '', existingValue: null, file: null });
-      setAfterImage({ previewUrl: '', existingValue: null, file: null });
-      return;
-    }
+      const successCopy =
+        mode === 'draft' ? 'Rascunho salvo com sucesso.' : 'Visita salva com sucesso.';
+      setSuccessMessage(successCopy);
 
-    if (nextVisitId) {
-      router.push(`/visitas/${nextVisitId}`);
-      router.refresh();
+      const nextVisitId = result.visitId ?? visitId;
+
+      if (!nextVisitId && mode === 'final') {
+        reset({
+          establishmentId: null,
+          establishmentLabel: '',
+          visitDate: getTodayDisplayDate(),
+          observation: '',
+          products: [],
+        });
+        setSelectedClient(null);
+        handleBeforeImagesChange([]);
+        handleAfterImagesChange([]);
+        return;
+      }
+
+      if (mode === 'final' && nextVisitId) {
+        setShowSuccessDialog(true);
+        return;
+      }
+
+      if (nextVisitId && mode === 'draft') {
+        router.push(`/visitas/${nextVisitId}`);
+        router.refresh();
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : null;
+      setFormError(getFriendlyApiMessage(errorMessage));
     }
   };
 
@@ -864,7 +1042,8 @@ export function NewVisitForm({
                     </p>
                     {selectedClient && (
                       <>
-                        <p className="mt-1 text-sm text-white/70">{buildClientSubtitle(selectedClient)}</p>
+                        <p className="mt-1 text-sm text-white/75">{buildClientSecondaryLabel(selectedClient)}</p>
+                        <p className="mt-1 text-xs text-white/65">{buildClientSubtitle(selectedClient)}</p>
                         <p className="mt-1 text-xs text-white/65">Documento: {selectedClient.document}</p>
                       </>
                     )}
@@ -896,7 +1075,7 @@ export function NewVisitForm({
                     }`}
                   >
                     <p className="font-semibold text-white">{buildEstablishmentLabel(client)}</p>
-                    <p className="mt-1 text-sm text-white/75">{client.client_name}</p>
+                    <p className="mt-1 text-sm text-white/75">{buildClientSecondaryLabel(client)}</p>
                     <p className="mt-1 text-xs text-white/65">{buildClientSubtitle(client)}</p>
                   </button>
                 ))}
@@ -979,8 +1158,20 @@ export function NewVisitForm({
           </div>
 
           <div className="grid gap-4 md:grid-cols-2">
-            <VisitImageField id="before-image" label="Imagem antes" image={beforeImage} onChange={setBeforeImage} />
-            <VisitImageField id="after-image" label="Imagem depois" image={afterImage} onChange={setAfterImage} />
+            <VisitImageGalleryField
+              idPrefix="before-images"
+              label="Antes"
+              helperText="Selecione zero, uma ou varias fotos do ambiente antes da visita."
+              images={beforeImages}
+              onChange={handleBeforeImagesChange}
+            />
+            <VisitImageGalleryField
+              idPrefix="after-images"
+              label="Depois"
+              helperText="Selecione zero, uma ou varias fotos do ambiente depois da visita."
+              images={afterImages}
+              onChange={handleAfterImagesChange}
+            />
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
@@ -1015,6 +1206,15 @@ export function NewVisitForm({
               ) : (
                 fields.map((field, index) => (
                   <div key={field.id} className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                    {(() => {
+                      const currentProduct = watchedProducts?.[index];
+                      const usesIndefiniteExpiration = shouldUseIndefiniteExpiration(
+                        currentProduct?.name ?? '',
+                        Number(currentProduct?.quantity ?? 0)
+                      );
+
+                      return (
+                        <>
                     <div className="flex items-center justify-between gap-3">
                       <p className="text-sm font-semibold text-white">Produto {index + 1}</p>
                       <button
@@ -1081,11 +1281,24 @@ export function NewVisitForm({
                         <div className="relative">
                           <input
                             type="text"
-                            inputMode="numeric"
-                            placeholder="dd/mm/aaaa"
-                            className="mt-2 block w-full rounded-2xl border border-white/12 bg-white px-4 py-3 pr-12 text-gray-900 shadow-sm outline-none transition focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15"
+                            inputMode={usesIndefiniteExpiration ? undefined : 'numeric'}
+                            readOnly={usesIndefiniteExpiration}
+                            placeholder={usesIndefiniteExpiration ? INDEFINITE_EXPIRATION_LABEL : 'dd/mm/aaaa'}
+                            className={`mt-2 block w-full rounded-2xl border border-white/12 px-4 py-3 pr-12 shadow-sm outline-none transition ${
+                              usesIndefiniteExpiration
+                                ? 'bg-white/80 text-gray-700'
+                                : 'bg-white text-gray-900 focus:border-[#009c6c] focus:ring-4 focus:ring-[#009c6c]/15'
+                            }`}
                             {...register(`products.${index}.expirationDate`, {
                               onChange: (event) => {
+                                if (usesIndefiniteExpiration) {
+                                  setValue(`products.${index}.expirationDate`, INDEFINITE_EXPIRATION_LABEL, {
+                                    shouldDirty: true,
+                                    shouldValidate: true,
+                                  });
+                                  return;
+                                }
+
                                 setValue(`products.${index}.expirationDate`, formatDateInput(event.target.value), {
                                   shouldDirty: true,
                                   shouldValidate: true,
@@ -1095,11 +1308,12 @@ export function NewVisitForm({
                           />
                           <button
                             type="button"
+                            disabled={usesIndefiniteExpiration}
                             onClick={() => {
                               const picker = document.getElementById(`product-expiration-${field.id}`) as HTMLInputElement | null;
                               picker?.showPicker?.();
                             }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-[#0f2d3d] transition hover:bg-[#0f2d3d]/8"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-[#0f2d3d] transition hover:bg-[#0f2d3d]/8 disabled:cursor-not-allowed disabled:opacity-40"
                             aria-label={`Abrir calendario da validade do produto ${index + 1}`}
                           >
                             <CalendarDays size={18} />
@@ -1111,6 +1325,10 @@ export function NewVisitForm({
                             className="pointer-events-none absolute h-0 w-0 opacity-0"
                             value={displayDateToIso(watchedProducts?.[index]?.expirationDate ?? '') ?? ''}
                             onChange={(event) => {
+                              if (usesIndefiniteExpiration) {
+                                return;
+                              }
+
                               setValue(`products.${index}.expirationDate`, isoDateToDisplay(event.target.value), {
                                 shouldDirty: true,
                                 shouldValidate: true,
@@ -1123,8 +1341,16 @@ export function NewVisitForm({
                             {errors.products[index]?.expirationDate?.message}
                           </p>
                         )}
+                        {usesIndefiniteExpiration && (
+                          <p className="mt-2 text-xs text-white/55">
+                            A validade fica como indefinido para este produto ou quando a quantidade e 0.
+                          </p>
+                        )}
                       </div>
                     </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 ))
               )}
@@ -1132,7 +1358,7 @@ export function NewVisitForm({
 
             {watchedProducts?.length > 0 && (
               <p className="mt-4 text-xs text-white/55">
-                Todos os produtos enviados precisam ter nome, quantidade, unidade e validade.
+                Todos os produtos enviados precisam ter nome, quantidade, unidade e validade. Nos sabores especiais e quando a quantidade e 0, a validade sera indefinido.
               </p>
             )}
           </div>
@@ -1183,6 +1409,7 @@ export function NewVisitForm({
           )}
         </form>
       </div>
+      <VisitSuccessDialog isOpen={showSuccessDialog} homePath={homePath} />
     </section>
   );
 }

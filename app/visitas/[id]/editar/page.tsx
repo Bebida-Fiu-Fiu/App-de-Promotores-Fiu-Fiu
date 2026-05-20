@@ -7,6 +7,28 @@ import { getSession } from '@/lib/auth';
 import { getVisitById } from '@/lib/api/promotor';
 import type { PromotorVisitProduct } from '@/types/promotor';
 
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function shouldDisplayIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
+}
+
 function formatDatabaseDateToDisplay(value: string | Date | null) {
   if (!value) {
     return '';
@@ -35,14 +57,14 @@ export default async function EditVisitPage({
   const { id } = await params;
 
   let visit:
-    | {
+      | {
         establishmentLabel: string;
         establishmentId: number | null;
         visitDate: string;
         observation: string;
         products: PromotorVisitProduct[];
-        beforeImage: string;
-        afterImage: string;
+        beforeImages: string[];
+        afterImages: string[];
         isDraft: boolean;
         canEdit: boolean;
       }
@@ -57,14 +79,19 @@ export default async function EditVisitPage({
         establishmentId: row.establishmentId,
         visitDate: formatDatabaseDateToDisplay(row.visitDate),
         observation: row.observation ?? '',
-        beforeImage: row.beforeImage ?? '',
-        afterImage: row.afterImage ?? '',
+        beforeImages: row.beforeImages ?? [],
+        afterImages: row.afterImages ?? [],
         products: Array.isArray(row.products)
           ? row.products.map((product) => ({
               name: product.name ?? '',
               quantity: Number(product.quantity ?? 0),
               unit: product.unit === 'pack' || product.unit === 'caixa' ? product.unit : 'unidade',
-              expirationDate: formatDatabaseDateToDisplay(product.expirationDate ?? ''),
+              expirationDate: shouldDisplayIndefiniteExpiration(
+                product.name ?? '',
+                Number(product.quantity ?? 0)
+              )
+                ? 'indefinido'
+                : formatDatabaseDateToDisplay(product.expirationDate ?? ''),
             }))
           : [],
         isDraft: Boolean(row.isDraft),
@@ -103,8 +130,8 @@ export default async function EditVisitPage({
           visitDate: visit.visitDate,
           observation: visit.observation,
           products: visit.products,
-          beforeImage: visit.beforeImage,
-          afterImage: visit.afterImage,
+          beforeImages: visit.beforeImages,
+          afterImages: visit.afterImages,
         }}
       />
     </main>

@@ -112,6 +112,20 @@ type ApiRequestOptions = {
   next?: NextFetchRequestConfig;
 };
 
+function normalizeAuthorizationToken(token: string) {
+  const trimmed = token.trim().replace(/^['"]|['"]$/g, '');
+
+  if (!trimmed) {
+    return '';
+  }
+
+  if (/^bearer\s+/i.test(trimmed)) {
+    return trimmed.replace(/^bearer\s+/i, '').trim();
+  }
+
+  return trimmed;
+}
+
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}) {
   const result = await apiRequestWithMeta<T>(path, options);
   return result.data;
@@ -122,7 +136,11 @@ export async function apiRequestWithMeta<T>(path: string, options: ApiRequestOpt
   const headers = new Headers(options.headers);
 
   if (options.token) {
-    headers.set('Authorization', `Bearer ${options.token}`);
+    const normalizedToken = normalizeAuthorizationToken(options.token);
+
+    if (normalizedToken) {
+      headers.set('Authorization', `Bearer ${normalizedToken}`);
+    }
   }
 
   let body: BodyInit | undefined;

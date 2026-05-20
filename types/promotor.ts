@@ -11,7 +11,7 @@ export type PromotorVisitImageUpload = {
   base64: string;
 };
 
-export type PromotorVisitImageInput = string | PromotorVisitImageUpload | null;
+export type PromotorVisitImageArrayInput = Array<string | PromotorVisitImageUpload>;
 
 export type PromotorVisit = {
   id: number;
@@ -20,8 +20,8 @@ export type PromotorVisit = {
   establishment: string;
   visitDate: string | null;
   products: PromotorVisitProduct[];
-  beforeImage: string;
-  afterImage: string;
+  beforeImages: string[];
+  afterImages: string[];
   observation: string | null;
   isDraft: boolean;
   canEdit: boolean;
@@ -79,8 +79,8 @@ export type PromotorVisitPayload = {
   establishment?: number | null;
   visitDate?: string | null;
   products: PromotorVisitProduct[];
-  beforeImage?: PromotorVisitImageInput;
-  afterImage?: PromotorVisitImageInput;
+  beforeImages?: PromotorVisitImageArrayInput;
+  afterImages?: PromotorVisitImageArrayInput;
   observation?: string | null;
   isDraft?: boolean;
 };

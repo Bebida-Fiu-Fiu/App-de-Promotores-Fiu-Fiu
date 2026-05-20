@@ -1,9 +1,9 @@
 import Link from 'next/link';
-import Image from 'next/image';
 import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+import { VisitImageThumbnailGallery } from '@/components/visits/visit-image-thumbnail-gallery';
 import { getHomePath, getSession } from '@/lib/auth';
 import { getVisitById } from '@/lib/api/promotor';
 import { getHeaderFullName } from '@/lib/header-user';
@@ -14,6 +14,28 @@ type VisitProduct = {
   unit: string;
   expirationDate: string;
 };
+
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function shouldDisplayIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
+}
 
 function formatDatabaseDateToDisplay(value: string | Date | null) {
   if (!value) {
@@ -45,12 +67,12 @@ export default async function VisitDetailsPage({
   const { id } = await params;
 
   let visit:
-    | {
+      | {
         establishment: string;
         visitDate: string;
         products: VisitProduct[];
-        beforeImage: string;
-        afterImage: string;
+        beforeImages: string[];
+        afterImages: string[];
         observation: string | null;
         isDraft: boolean;
         canEdit: boolean;
@@ -64,9 +86,14 @@ export default async function VisitDetailsPage({
       visit = {
         establishment: currentVisit.establishment ?? 'Rascunho sem estabelecimento',
         visitDate: formatDatabaseDateToDisplay(currentVisit.visitDate),
-        products: currentVisit.products,
-        beforeImage: currentVisit.beforeImage ?? '',
-        afterImage: currentVisit.afterImage ?? '',
+        products: currentVisit.products.map((product) => ({
+          ...product,
+          expirationDate: shouldDisplayIndefiniteExpiration(product.name, Number(product.quantity ?? 0))
+            ? 'indefinido'
+            : product.expirationDate,
+        })),
+        beforeImages: currentVisit.beforeImages ?? [],
+        afterImages: currentVisit.afterImages ?? [],
         observation: currentVisit.observation,
         isDraft: Boolean(currentVisit.isDraft),
         canEdit: currentVisit.canEdit,
@@ -116,6 +143,7 @@ export default async function VisitDetailsPage({
               {visit.isDraft && (
                 <DeleteDraftButton
                   visitId={Number(id)}
+                  redirectTo={getHomePath(session.user.role)}
                   className="inline-flex h-11 items-center justify-center rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
                 />
               )}
@@ -139,38 +167,22 @@ export default async function VisitDetailsPage({
             </div>
           )}
 
-          {(visit.beforeImage || visit.afterImage) && (
-            <div className="mb-6 grid gap-4 sm:grid-cols-2">
-              {visit.beforeImage && (
-                <article className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-4 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
-                    Antes
-                  </p>
-                  <Image
-                    src={visit.beforeImage}
-                    alt="Imagem de antes da visita"
-                    width={1200}
-                    height={900}
-                    unoptimized
-                    className="mt-3 h-64 w-full rounded-[18px] object-cover"
-                  />
-                </article>
+          {(visit.beforeImages.length > 0 || visit.afterImages.length > 0) && (
+            <div className="mb-6 grid gap-4 lg:grid-cols-2">
+              {visit.beforeImages.length > 0 && (
+                <VisitImageThumbnailGallery
+                  images={visit.beforeImages}
+                  sectionTitle="Antes"
+                  altPrefix="Imagem de antes da visita"
+                />
               )}
 
-              {visit.afterImage && (
-                <article className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-4 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
-                    Depois
-                  </p>
-                  <Image
-                    src={visit.afterImage}
-                    alt="Imagem de depois da visita"
-                    width={1200}
-                    height={900}
-                    unoptimized
-                    className="mt-3 h-64 w-full rounded-[18px] object-cover"
-                  />
-                </article>
+              {visit.afterImages.length > 0 && (
+                <VisitImageThumbnailGallery
+                  images={visit.afterImages}
+                  sectionTitle="Depois"
+                  altPrefix="Imagem de depois da visita"
+                />
               )}
             </div>
           )}

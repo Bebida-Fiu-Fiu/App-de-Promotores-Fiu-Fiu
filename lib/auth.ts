@@ -8,6 +8,20 @@ export const SESSION_USER_COOKIE_NAME = 'ff_user';
 
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
 
+function normalizeStoredAccessToken(token: string) {
+  const trimmed = token.trim().replace(/^['"]|['"]$/g, '');
+
+  if (!trimmed) {
+    return '';
+  }
+
+  if (/^bearer\s+/i.test(trimmed)) {
+    return trimmed.replace(/^bearer\s+/i, '').trim();
+  }
+
+  return trimmed;
+}
+
 function isUserRole(value: string | undefined): value is UserRole {
   return value === 'promotor' || value === 'comercial';
 }
@@ -30,6 +44,18 @@ function decodeJwtPayload(token: string) {
   } catch {
     return null;
   }
+}
+
+function isJwtExpired(token: string) {
+  const payload = decodeJwtPayload(token);
+  const expiresAt = Number(payload?.exp);
+
+  if (!Number.isFinite(expiresAt) || expiresAt <= 0) {
+    return false;
+  }
+
+  const nowInSeconds = Math.floor(Date.now() / 1000);
+  return expiresAt <= nowInSeconds;
 }
 
 export function getHomePath(role: UserRole | null | undefined) {
@@ -57,11 +83,17 @@ export function getPromotorIdFromSession(session: SessionData | null | undefined
 
 export async function getSession() {
   const cookieStore = await cookies();
-  const accessToken = cookieStore.get(SESSION_ACCESS_TOKEN_COOKIE_NAME)?.value;
+  const accessToken = normalizeStoredAccessToken(
+    cookieStore.get(SESSION_ACCESS_TOKEN_COOKIE_NAME)?.value ?? ''
+  );
   const userCookie = cookieStore.get(SESSION_USER_COOKIE_NAME)?.value;
   const roleValue = cookieStore.get(SESSION_ROLE_COOKIE_NAME)?.value;
 
   if (!accessToken || !userCookie) {
+    return null;
+  }
+
+  if (isJwtExpired(accessToken)) {
     return null;
   }
 
@@ -98,7 +130,13 @@ export async function requireSessionUser() {
 
 export async function createSession(session: SessionData) {
   const cookieStore = await cookies();
-  const { accessToken, user } = session;
+  const accessToken = session.accessToken;
+  const { user } = session;
+
+  cookieStore.delete(SESSION_COOKIE_NAME);
+  cookieStore.delete(SESSION_ROLE_COOKIE_NAME);
+  cookieStore.delete(SESSION_ACCESS_TOKEN_COOKIE_NAME);
+  cookieStore.delete(SESSION_USER_COOKIE_NAME);
 
   cookieStore.set(SESSION_COOKIE_NAME, user.email, {
     httpOnly: true,

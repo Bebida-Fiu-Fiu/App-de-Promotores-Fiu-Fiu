@@ -8,6 +8,7 @@ import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
 import { ApiError } from '@/lib/api/client';
 import {
   createPromotorMileage,
+  deleteDraftVisit,
   deletePromotorAgendaEntry,
   createPromotorVisit,
   getPromotorMe,
@@ -55,6 +56,34 @@ function parseIsoDate(value: string) {
   return date;
 }
 
+const INDEFINITE_EXPIRATION_LABEL = 'indefinido';
+
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function isIndefiniteExpirationValue(value: string) {
+  return value.trim().toLowerCase() === INDEFINITE_EXPIRATION_LABEL;
+}
+
+function shouldUseIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
+}
+
 function addMonths(date: Date, months: number) {
   return new Date(date.getFullYear(), date.getMonth() + months, date.getDate());
 }
@@ -74,7 +103,10 @@ const visitProductSchema = z.object({
   name: z.string().min(1),
   quantity: z.number().min(0),
   unit: z.enum(['unidade', 'pack', 'caixa']),
-  expirationDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  expirationDate: z.string().refine(
+    (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) || isIndefiniteExpirationValue(value),
+    'Informe uma validade valida.'
+  ),
 });
 
 const visitImageSchema = z.object({
@@ -88,8 +120,8 @@ const visitSchema = z.object({
   visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   products: z.array(visitProductSchema).optional().default([]),
   isDraft: z.boolean().optional(),
-  beforeImage: z.union([z.string().trim(), visitImageSchema, z.null()]).optional(),
-  afterImage: z.union([z.string().trim(), visitImageSchema, z.null()]).optional(),
+  beforeImages: z.array(z.union([z.string().trim(), visitImageSchema])).optional(),
+  afterImages: z.array(z.union([z.string().trim(), visitImageSchema])).optional(),
   observation: z.string().trim().nullable().optional(),
 }).superRefine((visit, ctx) => {
   if (!visit.visitDate) {
@@ -97,7 +129,26 @@ const visitSchema = z.object({
   }
 
   visit.products.forEach((product, index) => {
-    if (product.quantity === 0) {
+    const requiresIndefiniteExpiration = shouldUseIndefiniteExpiration(product.name, product.quantity);
+
+    if (requiresIndefiniteExpiration) {
+      if (!isIndefiniteExpirationValue(product.expirationDate)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'A validade deve ser indefinido para este produto ou quando a quantidade e 0.',
+          path: ['products', index, 'expirationDate'],
+        });
+      }
+
+      return;
+    }
+
+    if (isIndefiniteExpirationValue(product.expirationDate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Informe uma data de validade valida para este produto.',
+        path: ['products', index, 'expirationDate'],
+      });
       return;
     }
 
@@ -229,7 +280,8 @@ function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['prod
       product.name.trim() &&
       Number.isFinite(Number(product.quantity)) &&
       Number(product.quantity) >= 0 &&
-      /^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate)
+      (/^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate) ||
+        isIndefiniteExpirationValue(product.expirationDate))
     );
   });
 }
@@ -253,6 +305,7 @@ export async function login(data: z.infer<typeof loginSchema>) {
       id: me.id ?? authResult.user.id,
     };
 
+    await clearSession();
     await createSession({
       accessToken: authResult.accessToken,
       user,
@@ -287,6 +340,7 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
       id: me.id ?? authResult.user.id,
     };
 
+    await clearSession();
     await createSession({
       accessToken: authResult.accessToken,
       user,
@@ -434,6 +488,7 @@ export async function searchClients(
         const result = await client.query(
           `SELECT DISTINCT
              c.id,
+             a.nickname,
              c.client_name,
              c.fantasy_name,
              c.document,
@@ -612,8 +667,8 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
       establishment: validation.data.establishment,
       visitDate: validation.data.visitDate,
       products: validation.data.products,
-      beforeImage: validation.data.beforeImage ?? null,
-      afterImage: validation.data.afterImage ?? null,
+      beforeImages: validation.data.beforeImages ?? [],
+      afterImages: validation.data.afterImages ?? [],
       observation: validation.data.observation ?? null,
       isDraft: false,
     };
@@ -634,6 +689,16 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
   } catch (error) {
     console.error('Create visit API error:', error);
     if (error instanceof ApiError) {
+      if (error.status === 401) {
+        await clearSession();
+
+        return {
+          success: false,
+          error: error.message || 'Sessao expirada. Faca login novamente.',
+          shouldRedirectToLogin: true,
+        };
+      }
+
       return { success: false, error: error.message || 'Nao foi possivel salvar a visita.' };
     }
     return { success: false, error: 'Nao foi possivel salvar a visita.' };
@@ -663,8 +728,8 @@ export async function saveVisitDraft(
       establishment: validation.data.establishment ?? null,
       visitDate: validation.data.visitDate ?? null,
       products: draftProducts,
-      beforeImage: validation.data.beforeImage ?? null,
-      afterImage: validation.data.afterImage ?? null,
+      beforeImages: validation.data.beforeImages ?? [],
+      afterImages: validation.data.afterImages ?? [],
       observation: validation.data.observation ?? null,
       isDraft: true,
     };
@@ -686,6 +751,16 @@ export async function saveVisitDraft(
   } catch (error) {
     console.error('Save visit draft API error:', error);
     if (error instanceof ApiError) {
+      if (error.status === 401) {
+        await clearSession();
+
+        return {
+          success: false,
+          error: error.message || 'Sessao expirada. Faca login novamente.',
+          shouldRedirectToLogin: true,
+        };
+      }
+
       return { success: false, error: error.message || 'Nao foi possivel salvar o rascunho.' };
     }
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
@@ -693,11 +768,52 @@ export async function saveVisitDraft(
 }
 
 export async function deleteVisitDraft(visitId: number) {
-  void visitId;
-  return {
-    success: false,
-    error: 'A API externa atual nao expoe exclusao de rascunho.',
-  };
+  const session = await getSession();
+
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.', shouldRedirectToLogin: true };
+  }
+
+  if (!Number.isFinite(visitId) || visitId <= 0) {
+    return { success: false, error: 'Visita invalida.' };
+  }
+
+  try {
+    const deletedVisit = await deleteDraftVisit(session.accessToken, visitId);
+
+    revalidatePath('/');
+    revalidatePath('/promotor');
+    revalidatePath('/visitas/nova');
+    revalidatePath(`/visitas/${visitId}`);
+    revalidatePath(`/visitas/${visitId}/editar`);
+
+    return {
+      success: true,
+      deletedVisitId: deletedVisit?.id ?? visitId,
+      message: 'Rascunho excluido com sucesso.',
+    };
+  } catch (error) {
+    console.error('Delete visit draft API error:', error);
+
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        await clearSession();
+
+        return {
+          success: false,
+          error: error.message || 'Sessao expirada. Faca login novamente.',
+          shouldRedirectToLogin: true,
+        };
+      }
+
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel excluir o rascunho.',
+      };
+    }
+
+    return { success: false, error: 'Nao foi possivel excluir o rascunho.' };
+  }
 }
 
 export async function createCommercialSubmission(

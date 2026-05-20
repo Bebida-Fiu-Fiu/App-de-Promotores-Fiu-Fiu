@@ -7,6 +7,7 @@ import type {
   PromotorProfile,
   PromotorVisitListPage,
   PromotorVisit,
+  PromotorVisitImageArrayInput,
   PromotorVisitPayload,
   PromotorVisitProduct,
 } from '@/types/promotor';
@@ -40,6 +41,28 @@ function toStringValue(value: unknown, fallback = '') {
 
 function toNullableString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function shouldDisplayIndefiniteExpiration(product: Pick<PromotorVisitProduct, 'name' | 'quantity'>) {
+  if (product.quantity === 0 && product.name.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(product.name));
 }
 
 function normalizeDateKey(value: unknown) {
@@ -151,7 +174,7 @@ function readBearerTokenFromHeader(value: string | null) {
     return '';
   }
 
-  const trimmed = value.trim();
+  const trimmed = value.trim().replace(/^['"]|['"]$/g, '');
 
   if (!trimmed) {
     return '';
@@ -173,14 +196,12 @@ function normalizeAuthResultWithHeaders(payload: unknown, headers: Headers): Aut
     throw new Error('Resposta invalida da autenticacao externa.');
   }
 
-  const accessToken =
+  const tokenCandidates = [
     readStringByPaths(source, [
       ['accessToken'],
       ['access_token'],
       ['token'],
       ['jwt'],
-      ['idToken'],
-      ['id_token'],
       ['bearerToken'],
       ['bearer_token'],
       ['sessionToken'],
@@ -203,12 +224,30 @@ function normalizeAuthResultWithHeaders(payload: unknown, headers: Headers): Aut
       ['payload', 'access_token'],
       ['payload', 'token'],
       ['payload', 'jwt'],
-    ]) ||
-    readBearerTokenFromHeader(headers.get('authorization')) ||
-    readBearerTokenFromHeader(headers.get('x-access-token')) ||
-    readBearerTokenFromHeader(headers.get('access-token')) ||
-    readBearerTokenFromHeader(headers.get('token')) ||
-    readBearerTokenFromHeader(headers.get('jwt'));
+    ]),
+    readStringByPaths(source, [
+      ['idToken'],
+      ['id_token'],
+      ['data', 'idToken'],
+      ['data', 'id_token'],
+      ['auth', 'idToken'],
+      ['auth', 'id_token'],
+      ['result', 'idToken'],
+      ['result', 'id_token'],
+      ['payload', 'idToken'],
+      ['payload', 'id_token'],
+    ]),
+    headers.get('authorization'),
+    headers.get('x-access-token'),
+    headers.get('access-token'),
+    headers.get('token'),
+    headers.get('jwt'),
+  ]
+    .map((value) => readBearerTokenFromHeader(value))
+    .filter(Boolean)
+    .filter((value, index, array) => array.indexOf(value) === index);
+
+  const accessToken = tokenCandidates[0] ?? '';
 
   if (!accessToken) {
     throw new Error('Access token nao retornado pela API externa.');
@@ -223,13 +262,116 @@ function normalizeAuthResultWithHeaders(payload: unknown, headers: Headers): Aut
 function normalizeVisitProduct(payload: unknown): PromotorVisitProduct {
   const record = isRecord(payload) ? payload : {};
   const unit = toStringValue(record.unit ?? record.packageType, 'unidade');
-
-  return {
+  const product = {
     name: toStringValue(record.name),
     quantity: toNumber(record.quantity),
     unit: unit === 'pack' || unit === 'caixa' ? unit : 'unidade',
     expirationDate: toStringValue(record.expirationDate ?? record.expiration_date),
+  } satisfies PromotorVisitProduct;
+
+  if (shouldDisplayIndefiniteExpiration(product)) {
+    return {
+      ...product,
+      expirationDate: 'indefinido',
+    };
+  }
+
+  return product;
+}
+
+function getCurrentIsoDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeImageInputArray(value: PromotorVisitPayload['beforeImages'] | PromotorVisitPayload['afterImages']) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((item) => {
+    if (typeof item === 'string') {
+      return Boolean(item.trim());
+    }
+
+    return isRecord(item);
+  });
+}
+
+function resolveImageArrayPayload(
+  images: PromotorVisitPayload['beforeImages'] | PromotorVisitPayload['afterImages']
+): PromotorVisitImageArrayInput | undefined {
+  const normalizedImages = normalizeImageInputArray(images);
+
+  if (normalizedImages.length > 0) {
+    return normalizedImages;
+  }
+
+  return undefined;
+}
+
+function buildPromotorVisitApiPayload(payload: PromotorVisitPayload) {
+  const fallbackVisitDate = payload.visitDate ?? getCurrentIsoDate();
+  const beforeImages = resolveImageArrayPayload(payload.beforeImages);
+  const afterImages = resolveImageArrayPayload(payload.afterImages);
+
+  return {
+    establishmentId: payload.establishment ?? undefined,
+    visitDate: payload.visitDate ?? undefined,
+    products: payload.products.map((product) => ({
+      name: product.name,
+      quantity: product.quantity,
+      unit: product.unit,
+      expirationDate:
+        /^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate) ? product.expirationDate : fallbackVisitDate,
+    })),
+    beforeImages,
+    afterImages,
+    observation: payload.observation ?? undefined,
+    isDraft: payload.isDraft ?? undefined,
   };
+}
+
+function normalizeImageUrlArray(value: unknown) {
+  const parsedValue = parseEmbeddedJsonString(value);
+
+  if (Array.isArray(parsedValue)) {
+    return normalizeImageUrlArray(parsedValue);
+  }
+
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (typeof item === 'string') {
+          return item.trim();
+        }
+
+        if (isRecord(item)) {
+          const nestedImage = isRecord(item.image) ? item.image : null;
+
+          return toStringValue(
+            item.url ??
+              item.path ??
+              item.src ??
+              item.imageUrl ??
+              item.image_url ??
+              item.fileUrl ??
+              item.file_url ??
+              item.downloadUrl ??
+              item.download_url ??
+              nestedImage?.url ??
+              nestedImage?.path ??
+              nestedImage?.src ??
+              nestedImage?.imageUrl ??
+              nestedImage?.image_url
+          );
+        }
+
+        return '';
+      })
+      .filter(Boolean);
+  }
+
+  return [];
 }
 
 function normalizeVisit(payload: unknown): PromotorVisit {
@@ -245,6 +387,8 @@ function normalizeVisit(payload: unknown): PromotorVisit {
     record.fantasyName ??
     record.fantasy_name ??
     record.establishment;
+  const beforeImages = normalizeImageUrlArray(record.beforeImages ?? record.before_images);
+  const afterImages = normalizeImageUrlArray(record.afterImages ?? record.after_images);
 
   return {
     id: toNumber(record.id),
@@ -256,8 +400,8 @@ function normalizeVisit(payload: unknown): PromotorVisit {
         : toStringValue(rawEstablishment, 'Rascunho sem estabelecimento'),
     visitDate: toNullableString(record.visitDate ?? record.visit_date ?? record.date),
     products: Array.isArray(record.products) ? record.products.map(normalizeVisitProduct) : [],
-    beforeImage: toStringValue(record.beforeImage ?? record.before_image),
-    afterImage: toStringValue(record.afterImage ?? record.after_image),
+    beforeImages,
+    afterImages,
     observation: toNullableString(record.observation ?? record.observacao),
     isDraft: Boolean(record.isDraft ?? record.is_draft),
     canEdit:
@@ -505,20 +649,53 @@ export async function createPromotorVisit(token: string, payload: PromotorVisitP
   const response = await apiRequest('/promotor/visit', {
     method: 'POST',
     token,
-    body: payload,
+    body: buildPromotorVisitApiPayload(payload),
   });
 
-  return isRecord(response) ? normalizeVisit(response) : null;
+  if (!isRecord(response)) {
+    return null;
+  }
+
+  const source = readNestedRecord(response, ['visit', 'data', 'report']) ?? response;
+  return normalizeVisit(source);
 }
 
 export async function updatePromotorVisit(token: string, visitId: number, payload: PromotorVisitPayload) {
   const response = await apiRequest(`/promotor/visit/${visitId}`, {
     method: 'PUT',
     token,
-    body: payload,
+    body: buildPromotorVisitApiPayload(payload),
   });
 
-  return isRecord(response) ? normalizeVisit(response) : null;
+  if (!isRecord(response)) {
+    return null;
+  }
+
+  const source = readNestedRecord(response, ['visit', 'data', 'report']) ?? response;
+  return normalizeVisit(source);
+}
+
+export async function createVisit(token: string, payload: PromotorVisitPayload) {
+  return createPromotorVisit(token, payload);
+}
+
+export async function updateVisit(token: string, visitId: number, payload: PromotorVisitPayload) {
+  return updatePromotorVisit(token, visitId, payload);
+}
+
+export async function deleteDraftVisit(token: string, visitId: number) {
+  const response = await apiRequest(`/promotor/visit/${visitId}`, {
+    method: 'DELETE',
+    token,
+  });
+
+  if (!isRecord(response)) {
+    return null;
+  }
+
+  return {
+    id: toNumber(response.id),
+  };
 }
 
 export async function createPromotorMileage(
