@@ -1175,27 +1175,11 @@ export function NewVisitForm({
           </div>
 
           <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-bold text-white">Produtos</h2>
-                <p className="mt-1 text-sm text-white/65">
-                  Adicione os produtos encontrados na visita. A lista comeca vazia por padrao.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  append({
-                    name: '',
-                    quantity: 0,
-                    unit: 'unidade',
-                    expirationDate: '',
-                  })
-                }
-                className="rounded-full border border-white/15 px-4 py-2 text-xs font-semibold text-white transition hover:bg-white/10"
-              >
-                Adicionar produto
-              </button>
+            <div>
+              <h2 className="text-lg font-bold text-white">Produtos</h2>
+              <p className="mt-1 text-sm text-white/65">
+                Adicione os produtos encontrados na visita. A lista comeca vazia por padrao.
+              </p>
             </div>
 
             <div className="mt-4 space-y-4">
@@ -1355,6 +1339,21 @@ export function NewVisitForm({
                 ))
               )}
             </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                append({
+                  name: '',
+                  quantity: 0,
+                  unit: 'unidade',
+                  expirationDate: '',
+                })
+              }
+              className="mt-4 block w-full rounded-2xl border border-white/15 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+            >
+              Adicionar produto
+            </button>
 
             {watchedProducts?.length > 0 && (
               <p className="mt-4 text-xs text-white/55">
