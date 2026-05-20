@@ -1,13 +1,13 @@
 import { redirect } from 'next/navigation';
 
 import { LoginForm } from '@/components/auth/login-form';
-import { getHomePath, getSession } from '@/lib/auth';
+import { getAppEntryPath, getSession } from '@/lib/auth';
 
 export default async function LoginPage() {
   const session = await getSession();
 
   if (session) {
-    redirect(getHomePath(session.role));
+    redirect(getAppEntryPath(session.user.role));
   }
 
   return (

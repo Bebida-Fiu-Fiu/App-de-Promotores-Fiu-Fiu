@@ -3,7 +3,8 @@ import { redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { getSession } from '@/lib/auth';
-import { getCommercialSubmissions, getPromotorFullNameByEmail } from '@/lib/commercial';
+import { listAllCommercialVisits } from '@/lib/api/comercial';
+import { getHeaderFullName } from '@/lib/header-user';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('pt-BR', {
@@ -23,13 +24,12 @@ export default async function ComercialHomePage({
     redirect('/login');
   }
 
+  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
+
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const query = resolvedSearchParams?.q?.trim() ?? '';
 
-  const [fullName, submissions] = await Promise.all([
-    getPromotorFullNameByEmail(session.email),
-    getCommercialSubmissions(),
-  ]);
+  const submissions = await listAllCommercialVisits(session.accessToken).catch(() => []);
 
   const normalizedQuery = query
     .normalize('NFD')

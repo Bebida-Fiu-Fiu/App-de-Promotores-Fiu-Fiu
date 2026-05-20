@@ -1,11 +1,22 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { pool } from '@/lib/db';
-import { clearSession, createSession, getHomePath, getSession } from '@/lib/auth';
+import { clearSession, createSession, getAppEntryPath, getHomePath, getSession } from '@/lib/auth';
 import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
+import { ApiError } from '@/lib/api/client';
+import {
+  createPromotorMileage,
+  deleteDraftVisit,
+  deletePromotorAgendaEntry,
+  createPromotorVisit,
+  getPromotorMe,
+  signInPromotor,
+  signUpPromotor,
+  updatePromotorVisit,
+} from '@/lib/api/promotor';
+import { createCommercialVisit, updateCommercialVisit } from '@/lib/api/comercial';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -21,60 +32,137 @@ const signupSchema = loginSchema.extend({
   path: ['confirmPassword'],
 });
 
-const productsWithIndefiniteExpiration = new Set([
-  'Cajazinha',
-  'Abacaxi Cortelâ',
-  'Tangerina c/ Acerola',
-  'Pomar',
-]);
+function parseIsoDate(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return null;
+  }
 
-function productHasIndefiniteExpiration(name: string) {
-  return productsWithIndefiniteExpiration.has(name.trim());
+  const [year, month, day] = value.split('-').map(Number);
+
+  if (!year || !month || !day) {
+    return null;
+  }
+
+  const date = new Date(year, month - 1, day);
+
+  if (
+    date.getFullYear() !== year ||
+    date.getMonth() !== month - 1 ||
+    date.getDate() !== day
+  ) {
+    return null;
+  }
+
+  return date;
+}
+
+const INDEFINITE_EXPIRATION_LABEL = 'indefinido';
+
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function isIndefiniteExpirationValue(value: string) {
+  return value.trim().toLowerCase() === INDEFINITE_EXPIRATION_LABEL;
+}
+
+function shouldUseIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
+}
+
+function addMonths(date: Date, months: number) {
+  return new Date(date.getFullYear(), date.getMonth() + months, date.getDate());
+}
+
+function isExpirationWithinVisitWindow(visitDate: string, expirationDate: string) {
+  const parsedVisitDate = parseIsoDate(visitDate);
+  const parsedExpirationDate = parseIsoDate(expirationDate);
+
+  if (!parsedVisitDate || !parsedExpirationDate) {
+    return false;
+  }
+
+  return parsedExpirationDate.getTime() <= addMonths(parsedVisitDate, 18).getTime();
 }
 
 const visitProductSchema = z.object({
   name: z.string().min(1),
   quantity: z.number().min(0),
-  packageType: z.enum(['unidade', 'pack', 'caixa']),
-  expirationDate: z.string(),
-}).superRefine((product, ctx) => {
-  if (productHasIndefiniteExpiration(product.name) || product.quantity <= 0) {
-    return;
-  }
+  unit: z.enum(['unidade', 'pack', 'caixa']),
+  expirationDate: z.string().refine(
+    (value) => /^\d{4}-\d{2}-\d{2}$/.test(value) || isIndefiniteExpirationValue(value),
+    'Informe uma validade valida.'
+  ),
+});
 
-  if (!/^\d{2}\/\d{2}\/\d{4}$/.test(product.expirationDate)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Data de validade invalida.',
-      path: ['expirationDate'],
-    });
-  }
+const visitImageSchema = z.object({
+  filename: z.string().trim().min(1),
+  contentType: z.string().trim().min(1),
+  base64: z.string().trim().min(1),
 });
 
 const visitSchema = z.object({
-  establishment: z.string().min(1),
-  date: z.string().regex(/^\d{2}\/\d{2}\/\d{4}$/),
-  observation: z.string().trim().optional().default(''),
-  products: z.array(visitProductSchema).min(1),
-  beforeImage: z.string().trim().optional().default(''),
-  afterImage: z.string().trim().optional().default(''),
+  establishment: z.number().int().positive().nullable().optional(),
+  visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  products: z.array(visitProductSchema).optional().default([]),
+  isDraft: z.boolean().optional(),
+  beforeImages: z.array(z.union([z.string().trim(), visitImageSchema])).optional(),
+  afterImages: z.array(z.union([z.string().trim(), visitImageSchema])).optional(),
+  observation: z.string().trim().nullable().optional(),
+}).superRefine((visit, ctx) => {
+  if (!visit.visitDate) {
+    return;
+  }
+
+  visit.products.forEach((product, index) => {
+    const requiresIndefiniteExpiration = shouldUseIndefiniteExpiration(product.name, product.quantity);
+
+    if (requiresIndefiniteExpiration) {
+      if (!isIndefiniteExpirationValue(product.expirationDate)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'A validade deve ser indefinido para este produto ou quando a quantidade e 0.',
+          path: ['products', index, 'expirationDate'],
+        });
+      }
+
+      return;
+    }
+
+    if (isIndefiniteExpirationValue(product.expirationDate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Informe uma data de validade valida para este produto.',
+        path: ['products', index, 'expirationDate'],
+      });
+      return;
+    }
+
+    if (!isExpirationWithinVisitWindow(visit.visitDate as string, product.expirationDate)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'A validade deve ser uma data valida e nao pode passar de 18 meses apos a visita.',
+        path: ['products', index, 'expirationDate'],
+      });
+    }
+  });
 });
 
-const visitDraftSchema = z.object({
-  establishment: z.string().trim().optional().default(''),
-  date: z.string().trim().optional().default(''),
-  observation: z.string().trim().optional().default(''),
-  products: z.array(
-    z.object({
-      name: z.string().trim().optional().default(''),
-      quantity: z.number().optional().default(0),
-      packageType: z.enum(['unidade', 'pack', 'caixa']).optional().default('unidade'),
-      expirationDate: z.string().trim().optional().default(''),
-    })
-  ).optional().default([]),
-  beforeImage: z.string().trim().optional().default(''),
-  afterImage: z.string().trim().optional().default(''),
-});
+const visitDraftSchema = visitSchema;
 
 const clientSearchSchema = z.object({
   clientId: z.string().trim().optional().default(''),
@@ -126,16 +214,6 @@ const commercialSubmissionUpdateSchema = commercialSubmissionSchema.extend({
   submissionId: z.coerce.number().int().positive(),
 });
 
-function parseDisplayDateToDatabase(value: string) {
-  const [day, month, year] = value.split('/');
-
-  if (!day || !month || !year) {
-    return null;
-  }
-
-  return `${year}-${month}-${day}`;
-}
-
 function normalizeDigits(value: string) {
   return value.replace(/\D/g, '');
 }
@@ -147,8 +225,25 @@ function normalizeTextSearch(value: string) {
     .toLowerCase();
 }
 
-function looksLikePasswordHash(password: string) {
-  return password.startsWith('$2a$') || password.startsWith('$2b$') || password.startsWith('$2y$');
+function decodeJwtPayload(token: string) {
+  const parts = token.split('.');
+
+  if (parts.length < 2) {
+    return null;
+  }
+
+  try {
+    const normalized = parts[1]
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .padEnd(Math.ceil(parts[1].length / 4) * 4, '=');
+    const json = Buffer.from(normalized, 'base64').toString('utf-8');
+    const parsed = JSON.parse(json) as Record<string, unknown>;
+
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 async function getCurrentPromotorId() {
@@ -158,10 +253,21 @@ async function getCurrentPromotorId() {
     return null;
   }
 
+  if (typeof session.user.id === 'number') {
+    return session.user.id;
+  }
+
+  const jwtPayload = decodeJwtPayload(session.accessToken);
+  const tokenSubject = Number(jwtPayload?.sub);
+
+  if (Number.isFinite(tokenSubject) && tokenSubject > 0) {
+    return tokenSubject;
+  }
+
   const client = await pool.connect();
 
   try {
-    const result = await client.query('SELECT id FROM promotors WHERE email = $1', [session.email]);
+    const result = await client.query('SELECT id FROM promotors WHERE email = $1', [session.user.email]);
     return result.rows[0]?.id ?? null;
   } finally {
     client.release();
@@ -169,98 +275,49 @@ async function getCurrentPromotorId() {
 }
 
 function normalizeDraftProducts(products: z.infer<typeof visitDraftSchema>['products']) {
-  return products
-    .filter((product) => {
-      return (
-        product.name.trim() ||
-        Number(product.quantity) > 0 ||
-        product.expirationDate.trim()
-      );
-    })
-    .map((product) => ({
-      name: product.name.trim(),
-      quantity: Number(product.quantity) || 0,
-      unit: product.packageType,
-      expirationDate: product.expirationDate.trim(),
-    }));
-}
-
-function isVisitEditable(createdAt: string | Date, isDraft: boolean) {
-  if (isDraft) {
-    return true;
-  }
-
-  const createdAtDate = createdAt instanceof Date ? createdAt : new Date(createdAt);
-  const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
-
-  return Date.now() - createdAtDate.getTime() <= sevenDaysInMs;
-}
-
-function isMissingVisitImageColumnError(error: unknown) {
-  if (!error || typeof error !== 'object' || !('code' in error)) {
-    return false;
-  }
-
-  const databaseError = error as { code?: string; message?: string };
-
-  return (
-    databaseError.code === '42703' &&
-    typeof databaseError.message === 'string' &&
-    (databaseError.message.includes('before_image') || databaseError.message.includes('after_image'))
-  );
+  return products.filter((product) => {
+    return (
+      product.name.trim() &&
+      Number.isFinite(Number(product.quantity)) &&
+      Number(product.quantity) >= 0 &&
+      (/^\d{4}-\d{2}-\d{2}$/.test(product.expirationDate) ||
+        isIndefiniteExpirationValue(product.expirationDate))
+    );
+  });
 }
 
 export async function login(data: z.infer<typeof loginSchema>) {
   const validation = loginSchema.safeParse(data);
 
   if (!validation.success) {
-    return { success: false, error: 'Invalid data' };
+    return { success: false, error: 'Dados invalidos.' };
   }
 
-  const { email, password } = validation.data;
-
   try {
-    const client = await pool.connect();
-    try {
-      const result = await client.query('SELECT * FROM promotors WHERE email = $1', [email]);
-      const user = result.rows[0];
+    const authResult = await signInPromotor(validation.data);
+    const me = await getPromotorMe(authResult.accessToken).catch(() => authResult.user);
+    const user = {
+      ...authResult.user,
+      ...me,
+      role: me.role === 'comercial' ? 'comercial' : authResult.user.role,
+      email: me.email || authResult.user.email || validation.data.email,
+      fullName: me.fullName ?? authResult.user.fullName,
+      id: me.id ?? authResult.user.id,
+    };
 
-      if (!user) {
-        return { success: false, error: 'Invalid credentials' };
-      }
+    await clearSession();
+    await createSession({
+      accessToken: authResult.accessToken,
+      user,
+    });
 
-      let passwordMatches = false;
-
-      if (looksLikePasswordHash(user.password)) {
-        passwordMatches = await bcrypt.compare(password, user.password);
-      } else {
-        passwordMatches = user.password === password;
-
-        if (passwordMatches) {
-          const hashedPassword = await bcrypt.hash(password, 12);
-
-          await client.query('UPDATE promotors SET password = $1 WHERE id = $2', [
-            hashedPassword,
-            user.id,
-          ]);
-        }
-      }
-
-      if (!passwordMatches) {
-        return { success: false, error: 'Invalid credentials' };
-      }
-
-      const role = user.role === 'comercial' ? 'comercial' : 'promotor';
-
-      await createSession(email, role);
-
-      return { success: true, homePath: getHomePath(role) };
-    } finally {
-      client.release();
-    }
+    return { success: true, homePath: getAppEntryPath(user.role) };
   } catch (error) {
-    console.error('Login error:', error);
-    return { success: false, error: 'Database connection failed' };
+    console.error('Login API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Credenciais invalidas.' };
+    }
+    return { success: false, error: 'Nao foi possivel entrar com a API externa.' };
   }
 }
 
@@ -268,37 +325,34 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
   const validation = signupSchema.safeParse(data);
 
   if (!validation.success) {
-    return { success: false, error: 'Invalid data' };
+    return { success: false, error: 'Dados invalidos.' };
   }
 
-  const { email, fullName, password, role } = validation.data;
-
   try {
-    const client = await pool.connect();
+    const authResult = await signUpPromotor(validation.data);
+    const me = await getPromotorMe(authResult.accessToken).catch(() => authResult.user);
+    const user = {
+      ...authResult.user,
+      ...me,
+      role: validation.data.role,
+      email: me.email || authResult.user.email || validation.data.email,
+      fullName: me.fullName ?? authResult.user.fullName ?? validation.data.fullName,
+      id: me.id ?? authResult.user.id,
+    };
 
-    try {
-      const existingUser = await client.query('SELECT 1 FROM promotors WHERE email = $1', [email]);
+    await clearSession();
+    await createSession({
+      accessToken: authResult.accessToken,
+      user,
+    });
 
-      if (existingUser.rowCount) {
-        return { success: false, error: 'Email already registered' };
-      }
-
-      const hashedPassword = await bcrypt.hash(password, 12);
-
-      await client.query(
-        'INSERT INTO promotors (full_name, email, password, role) VALUES ($1, $2, $3, $4)',
-        [fullName, email, hashedPassword, role]
-      );
-    } finally {
-      client.release();
-    }
-
-    await createSession(email, role);
-
-    return { success: true, homePath: getHomePath(role) };
+    return { success: true, homePath: getAppEntryPath(user.role) };
   } catch (error) {
-    console.error('Signup error:', error);
-    return { success: false, error: 'Could not create account' };
+    console.error('Signup API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel criar a conta.' };
+    }
+    return { success: false, error: 'Nao foi possivel criar a conta.' };
   }
 }
 
@@ -309,7 +363,7 @@ export async function logout() {
 export async function getSessionHomePath() {
   const session = await getSession();
 
-  return getHomePath(session?.role);
+  return getHomePath(session?.user.role);
 }
 
 export async function searchClients(
@@ -434,6 +488,7 @@ export async function searchClients(
         const result = await client.query(
           `SELECT DISTINCT
              c.id,
+             a.nickname,
              c.client_name,
              c.fantasy_name,
              c.document,
@@ -560,10 +615,36 @@ export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>)
   }
 }
 
-export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: number) {
-  const promotorId = await getCurrentPromotorId();
+export async function removeAgendaEntry(agendaEntryId: number) {
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  if (!Number.isFinite(agendaEntryId) || agendaEntryId <= 0) {
+    return { success: false, error: 'Cliente da agenda invalido.' };
+  }
+
+  try {
+    await deletePromotorAgendaEntry(session.accessToken, agendaEntryId);
+
+    revalidatePath('/agenda');
+
+    return { success: true };
+  } catch (error) {
+    console.error('Delete agenda entry API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel excluir o cliente da agenda.' };
+    }
+    return { success: false, error: 'Nao foi possivel excluir o cliente da agenda.' };
+  }
+}
+
+export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: number) {
+  const session = await getSession();
+
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -573,112 +654,52 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
     return { success: false, error: 'Dados da visita invalidos.' };
   }
 
-  const visitDate = parseDisplayDateToDatabase(validation.data.date);
-
-  if (!visitDate) {
-    return { success: false, error: 'Data da visita invalida.' };
+  if (!validation.data.establishment) {
+    return { success: false, error: 'Selecione um estabelecimento valido antes de enviar a visita.' };
   }
 
-  const products = validation.data.products.map((product) => {
-    const expirationDate = productHasIndefiniteExpiration(product.name)
-      ? 'indeterminado'
-      : product.quantity <= 0
-        ? ''
-        : parseDisplayDateToDatabase(product.expirationDate);
-
-    return {
-      name: product.name,
-      quantity: product.quantity,
-      unit: product.packageType,
-      expirationDate: expirationDate ?? product.expirationDate,
-    };
-  });
+  if (!validation.data.visitDate) {
+    return { success: false, error: 'Informe uma data de visita valida.' };
+  }
 
   try {
-    const client = await pool.connect();
+    const payload = {
+      establishment: validation.data.establishment,
+      visitDate: validation.data.visitDate,
+      products: validation.data.products,
+      beforeImages: validation.data.beforeImages ?? [],
+      afterImages: validation.data.afterImages ?? [],
+      observation: validation.data.observation ?? null,
+      isDraft: false,
+    };
 
-    try {
-      if (visitId) {
-        const existingVisit = await client.query(
-          'SELECT id, created_at, is_draft FROM visits WHERE id = $1 AND promotor_id = $2',
-          [visitId, promotorId]
-        );
-
-        if (!existingVisit.rowCount) {
-          return { success: false, error: 'Visita nao encontrada.' };
-        }
-
-        const visit = existingVisit.rows[0];
-
-        if (!isVisitEditable(visit.created_at, Boolean(visit.is_draft))) {
-          return { success: false, error: 'O prazo de 7 dias para editar esta visita já expirou.' };
-        }
-
-        await client.query(
-          `UPDATE visits
-           SET establishment = $1,
-               visit_date = $2,
-               observation = $3,
-               products = $4::jsonb,
-               before_image = $5,
-               after_image = $6,
-               is_draft = FALSE,
-               updated_at = NOW()
-           WHERE id = $7 AND promotor_id = $8`,
-          [
-            validation.data.establishment,
-            visitDate,
-            validation.data.observation || null,
-            JSON.stringify(products),
-            validation.data.beforeImage || null,
-            validation.data.afterImage || null,
-            visitId,
-            promotorId,
-          ]
-        );
-      } else {
-        await client.query(
-          `INSERT INTO visits (
-             promotor_id,
-             establishment,
-             visit_date,
-             observation,
-             products,
-             before_image,
-             after_image,
-             is_draft
-           )
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, FALSE)`,
-          [
-            promotorId,
-            validation.data.establishment,
-            visitDate,
-            validation.data.observation || null,
-            JSON.stringify(products),
-            validation.data.beforeImage || null,
-            validation.data.afterImage || null,
-          ]
-        );
-      }
-    } finally {
-      client.release();
-    }
+    const savedVisit = visitId
+      ? await updatePromotorVisit(session.accessToken, visitId, payload)
+      : await createPromotorVisit(session.accessToken, payload);
+    const nextVisitId = savedVisit?.id ?? visitId;
 
     revalidatePath('/');
     revalidatePath('/visitas/nova');
-    if (visitId) {
-      revalidatePath(`/visitas/${visitId}`);
-      revalidatePath(`/visitas/${visitId}/editar`);
+    if (nextVisitId) {
+      revalidatePath(`/visitas/${nextVisitId}`);
+      revalidatePath(`/visitas/${nextVisitId}/editar`);
     }
 
-    return { success: true };
+    return { success: true, visitId: nextVisitId };
   } catch (error) {
-    console.error('Create visit error:', error);
-    if (isMissingVisitImageColumnError(error)) {
-      return {
-        success: false,
-        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
-      };
+    console.error('Create visit API error:', error);
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        await clearSession();
+
+        return {
+          success: false,
+          error: error.message || 'Sessao expirada. Faca login novamente.',
+          shouldRedirectToLogin: true,
+        };
+      }
+
+      return { success: false, error: error.message || 'Nao foi possivel salvar a visita.' };
     }
     return { success: false, error: 'Nao foi possivel salvar a visita.' };
   }
@@ -688,9 +709,9 @@ export async function saveVisitDraft(
   data: z.infer<typeof visitDraftSchema>,
   visitId?: number
 ) {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -700,141 +721,97 @@ export async function saveVisitDraft(
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 
-  const establishment = validation.data.establishment.trim() || null;
-  const visitDate = /^\d{2}\/\d{2}\/\d{4}$/.test(validation.data.date)
-    ? parseDisplayDateToDatabase(validation.data.date)
-    : null;
-  const observation = validation.data.observation.trim() || null;
   const draftProducts = normalizeDraftProducts(validation.data.products);
 
   try {
-    const client = await pool.connect();
+    const payload = {
+      establishment: validation.data.establishment ?? null,
+      visitDate: validation.data.visitDate ?? null,
+      products: draftProducts,
+      beforeImages: validation.data.beforeImages ?? [],
+      afterImages: validation.data.afterImages ?? [],
+      observation: validation.data.observation ?? null,
+      isDraft: true,
+    };
 
-    try {
-      if (visitId) {
-        const existingVisit = await client.query(
-          'SELECT id FROM visits WHERE id = $1 AND promotor_id = $2',
-          [visitId, promotorId]
-        );
+    const savedVisit = visitId
+      ? await updatePromotorVisit(session.accessToken, visitId, payload)
+      : await createPromotorVisit(session.accessToken, payload);
 
-        if (!existingVisit.rowCount) {
-          return { success: false, error: 'Visita nao encontrada.' };
-        }
+    const nextVisitId = savedVisit?.id ?? visitId;
 
-        await client.query(
-          `UPDATE visits
-           SET establishment = $1,
-               visit_date = $2,
-               observation = $3,
-               products = $4::jsonb,
-               before_image = $5,
-               after_image = $6,
-               is_draft = TRUE,
-               updated_at = NOW()
-           WHERE id = $7 AND promotor_id = $8`,
-          [
-            establishment,
-            visitDate,
-            observation,
-            JSON.stringify(draftProducts),
-            validation.data.beforeImage || null,
-            validation.data.afterImage || null,
-            visitId,
-            promotorId,
-          ]
-        );
+    revalidatePath('/');
+    revalidatePath('/visitas/nova');
+    if (nextVisitId) {
+      revalidatePath(`/visitas/${nextVisitId}`);
+      revalidatePath(`/visitas/${nextVisitId}/editar`);
+    }
 
-        revalidatePath('/');
-        revalidatePath(`/visitas/${visitId}`);
-        revalidatePath(`/visitas/${visitId}/editar`);
+    return { success: true, visitId: nextVisitId };
+  } catch (error) {
+    console.error('Save visit draft API error:', error);
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        await clearSession();
 
-        return { success: true, visitId };
+        return {
+          success: false,
+          error: error.message || 'Sessao expirada. Faca login novamente.',
+          shouldRedirectToLogin: true,
+        };
       }
 
-      const result = await client.query(
-        `INSERT INTO visits (
-           promotor_id,
-           establishment,
-           visit_date,
-           observation,
-           products,
-           before_image,
-           after_image,
-           is_draft
-         )
-         VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, TRUE)
-         RETURNING id`,
-        [
-          promotorId,
-          establishment,
-          visitDate,
-          observation,
-          JSON.stringify(draftProducts),
-          validation.data.beforeImage || null,
-          validation.data.afterImage || null,
-        ]
-      );
-
-      const createdVisitId = Number(result.rows[0]?.id);
-
-      revalidatePath('/');
-      revalidatePath('/visitas/nova');
-      revalidatePath(`/visitas/${createdVisitId}`);
-      revalidatePath(`/visitas/${createdVisitId}/editar`);
-
-      return { success: true, visitId: createdVisitId };
-    } finally {
-      client.release();
-    }
-  } catch (error) {
-    console.error('Save visit draft error:', error);
-    if (isMissingVisitImageColumnError(error)) {
-      return {
-        success: false,
-        error: 'O banco ainda nao foi atualizado para salvar as imagens. Execute a migration add_visit_images_to_visits.sql.',
-      };
+      return { success: false, error: error.message || 'Nao foi possivel salvar o rascunho.' };
     }
     return { success: false, error: 'Nao foi possivel salvar o rascunho.' };
   }
 }
 
 export async function deleteVisitDraft(visitId: number) {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
-    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.', shouldRedirectToLogin: true };
+  }
+
+  if (!Number.isFinite(visitId) || visitId <= 0) {
+    return { success: false, error: 'Visita invalida.' };
   }
 
   try {
-    const client = await pool.connect();
-
-    try {
-      const existingVisit = await client.query(
-        'SELECT id, is_draft FROM visits WHERE id = $1 AND promotor_id = $2',
-        [visitId, promotorId]
-      );
-
-      if (!existingVisit.rowCount) {
-        return { success: false, error: 'Rascunho nao encontrado.' };
-      }
-
-      if (!existingVisit.rows[0].is_draft) {
-        return { success: false, error: 'Apenas rascunhos podem ser excluidos.' };
-      }
-
-      await client.query('DELETE FROM visits WHERE id = $1 AND promotor_id = $2', [visitId, promotorId]);
-    } finally {
-      client.release();
-    }
+    const deletedVisit = await deleteDraftVisit(session.accessToken, visitId);
 
     revalidatePath('/');
+    revalidatePath('/promotor');
     revalidatePath('/visitas/nova');
     revalidatePath(`/visitas/${visitId}`);
     revalidatePath(`/visitas/${visitId}/editar`);
 
-    return { success: true };
+    return {
+      success: true,
+      deletedVisitId: deletedVisit?.id ?? visitId,
+      message: 'Rascunho excluido com sucesso.',
+    };
   } catch (error) {
-    console.error('Delete visit draft error:', error);
+    console.error('Delete visit draft API error:', error);
+
+    if (error instanceof ApiError) {
+      if (error.status === 401) {
+        await clearSession();
+
+        return {
+          success: false,
+          error: error.message || 'Sessao expirada. Faca login novamente.',
+          shouldRedirectToLogin: true,
+        };
+      }
+
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel excluir o rascunho.',
+      };
+    }
+
     return { success: false, error: 'Nao foi possivel excluir o rascunho.' };
   }
 }
@@ -869,49 +846,30 @@ export async function createCommercialSubmission(
   } = validation.data;
 
   try {
-    const client = await pool.connect();
+    const createdVisit = await createCommercialVisit(session.accessToken, {
+      clientName,
+      fantasyName,
+      cnpj: cnpj ? normalizeDigits(cnpj) : null,
+      email: email || null,
+      phone,
+      address,
+      value,
+      salesQuantity,
+      sold,
+      visitDates,
+    });
 
-    try {
-      const result = await client.query(
-        `INSERT INTO commercial_submissions (
-           client_name,
-           fantasy_name,
-           cnpj,
-           email,
-           phone,
-           address,
-           total_value,
-           sales_quantity,
-           sold,
-           visit_dates,
-           submitted_by_email
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
-         RETURNING id`,
-        [
-          clientName,
-          fantasyName,
-          cnpj ? normalizeDigits(cnpj) : null,
-          email || null,
-          phone,
-          address,
-          value,
-          salesQuantity,
-          sold,
-          JSON.stringify(visitDates),
-          session.email,
-        ]
-      );
+    revalidatePath('/comercial');
 
-      const submissionId = Number(result.rows[0]?.id ?? 0);
-
-      revalidatePath('/comercial');
-
-      return { success: true, submissionId };
-    } finally {
-      client.release();
-    }
+    return { success: true, submissionId: createdVisit?.id ?? 0 };
   } catch (error) {
-    console.error('Create commercial submission error:', error);
+    console.error('Create commercial submission API error:', error);
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel salvar o formulario do comercial.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel salvar o formulario do comercial.' };
   }
 }
@@ -947,48 +905,18 @@ export async function updateCommercialSubmission(
   } = validation.data;
 
   try {
-    const client = await pool.connect();
-
-    try {
-      const existingSubmission = await client.query(
-        'SELECT id FROM commercial_submissions WHERE id = $1',
-        [submissionId]
-      );
-
-      if (!existingSubmission.rowCount) {
-        return { success: false, error: 'Cliente do comercial nao encontrado.' };
-      }
-
-      await client.query(
-        `UPDATE commercial_submissions
-         SET client_name = $1,
-             fantasy_name = $2,
-             cnpj = $3,
-             email = $4,
-             phone = $5,
-             address = $6,
-             total_value = $7,
-             sales_quantity = $8,
-             sold = $9,
-             visit_dates = $10::jsonb
-         WHERE id = $11`,
-        [
-          clientName,
-          fantasyName,
-          cnpj ? normalizeDigits(cnpj) : null,
-          email || null,
-          phone,
-          address,
-          value,
-          salesQuantity,
-          sold,
-          JSON.stringify(visitDates),
-          submissionId,
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await updateCommercialVisit(session.accessToken, submissionId, {
+      clientName,
+      fantasyName,
+      cnpj: cnpj ? normalizeDigits(cnpj) : null,
+      email: email || null,
+      phone,
+      address,
+      value,
+      salesQuantity,
+      sold,
+      visitDates,
+    });
 
     revalidatePath('/comercial');
     revalidatePath(`/comercial/${submissionId}`);
@@ -996,7 +924,13 @@ export async function updateCommercialSubmission(
 
     return { success: true, submissionId };
   } catch (error) {
-    console.error('Update commercial submission error:', error);
+    console.error('Update commercial submission API error:', error);
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel atualizar o cliente do comercial.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel atualizar o cliente do comercial.' };
   }
 }
@@ -1005,9 +939,9 @@ export async function saveWeeklyVehicleCheck(
   formData: FormData,
   options?: { allowWithoutPhoto?: boolean }
 ) {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
@@ -1037,103 +971,78 @@ export async function saveWeeklyVehicleCheck(
   }
 
   const { dateKey } = getWeeklyVehicleCheckDateContext();
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Promotor nao identificado para registrar a quilometragem.' };
+  }
 
   try {
-    const placeholderBase64 =
-      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
-    const fallbackImageBuffer = Buffer.from(placeholderBase64, 'base64');
-    const hasImage = image instanceof File && image.size > 0;
-    const imageBuffer = hasImage
-      ? Buffer.from(await image.arrayBuffer())
-      : fallbackImageBuffer;
-    const imageMimeType = hasImage ? image.type : 'image/jpeg';
-    const imageName = hasImage ? image.name || null : 'teste-sem-foto.jpg';
-    const client = await pool.connect();
+    const imageBase64 =
+      image instanceof File && image.size > 0
+        ? Buffer.from(await image.arrayBuffer()).toString('base64')
+        : 'b2zDoSA=';
+    const imageMimeType =
+      image instanceof File && image.size > 0
+        ? image.type || 'image/jpeg'
+        : '';
 
-    try {
-      await client.query(
-        `INSERT INTO vehicle_mileage_checks (
-           promotor_id,
-           check_date,
-           mileage,
-           image_data,
-           image_mime_type,
-           image_name
-         ) VALUES ($1, $2::date, $3, $4, $5, $6)
-         ON CONFLICT (promotor_id, check_date)
-         DO UPDATE SET
-           mileage = EXCLUDED.mileage,
-           image_data = EXCLUDED.image_data,
-           image_mime_type = EXCLUDED.image_mime_type,
-           image_name = EXCLUDED.image_name,
-           updated_at = NOW()`,
-        [
-          promotorId,
-          dateKey,
-          validation.data.mileage,
-          imageBuffer,
-          imageMimeType,
-          imageName,
-        ]
-      );
-    } finally {
-      client.release();
-    }
+    await createPromotorMileage(session.accessToken, {
+      promotorId,
+      mileage: validation.data.mileage,
+      checkDate: dateKey,
+      imageBase64,
+      imageMimeType,
+    });
 
     revalidatePath('/');
     revalidatePath('/agenda');
 
     return { success: true };
   } catch (error) {
-    console.error('Save weekly vehicle check error:', error);
+    console.error('Save weekly vehicle check API error:', error);
+    if (error instanceof ApiError) {
+      return { success: false, error: error.message || 'Nao foi possivel salvar a quilometragem.' };
+    }
     return { success: false, error: 'Nao foi possivel salvar a quilometragem.' };
   }
 }
 
 export async function skipWeeklyVehicleCheck() {
-  const promotorId = await getCurrentPromotorId();
+  const session = await getSession();
 
-  if (!promotorId) {
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
   const { dateKey } = getWeeklyVehicleCheckDateContext();
+  const promotorId = await getCurrentPromotorId();
+
+  if (!promotorId) {
+    return { success: false, error: 'Promotor nao identificado para registrar a quilometragem.' };
+  }
 
   try {
-    const placeholderBase64 =
-      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wCEAAkGBxAQEBUQEBAVFRUVFRUVFRUVFRUVFRUVFRUWFhUVFRUYHSggGBolGxUVITEhJSkrLi4uFx8zODMsNygtLisBCgoKDg0OGhAQGi0fHyUtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLf/AABEIAAEAAQMBIgACEQEDEQH/xAAXAAADAQAAAAAAAAAAAAAAAAAAAQID/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEAMQAAAB6A//xAAZEAEBAAMBAAAAAAAAAAAAAAABEQIhMUH/2gAIAQEAAT8ApY0m2uP/xAAVEQEBAAAAAAAAAAAAAAAAAAABEP/aAAgBAgEBPwCf/8QAFBEBAAAAAAAAAAAAAAAAAAAAEP/aAAgBAwEBPwCf/9k=';
-    const imageBuffer = Buffer.from(placeholderBase64, 'base64');
-    const client = await pool.connect();
-
-    try {
-      await client.query(
-        `INSERT INTO vehicle_mileage_checks (
-           promotor_id,
-           check_date,
-           mileage,
-           image_data,
-           image_mime_type,
-           image_name
-         ) VALUES ($1, $2::date, $3, $4, $5, $6)
-         ON CONFLICT (promotor_id, check_date)
-         DO UPDATE SET
-           mileage = EXCLUDED.mileage,
-           image_data = EXCLUDED.image_data,
-           image_mime_type = EXCLUDED.image_mime_type,
-           image_name = EXCLUDED.image_name,
-           updated_at = NOW()`,
-        [promotorId, dateKey, 0, imageBuffer, 'image/jpeg', 'quilometragem-pulada.jpg']
-      );
-    } finally {
-      client.release();
-    }
+    await createPromotorMileage(session.accessToken, {
+      promotorId,
+      mileage: 0,
+      checkDate: dateKey,
+      imageBase64: 'b2zDoSA=',
+      imageMimeType: '',
+    });
 
     revalidatePath('/');
     revalidatePath('/agenda');
 
     return { success: true };
   } catch (error) {
-    console.error('Skip weekly vehicle check error:', error);
+    console.error('Skip weekly vehicle check API error:', error);
+    if (error instanceof ApiError) {
+      return {
+        success: false,
+        error: error.message || 'Nao foi possivel registrar o pulo da quilometragem.',
+      };
+    }
     return { success: false, error: 'Nao foi possivel registrar o pulo da quilometragem.' };
   }
 }

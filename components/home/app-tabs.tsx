@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { getHomePath, UserRole } from '@/lib/auth';
+import { getHomePath } from '@/lib/auth';
+import type { UserRole } from '@/types/auth';
 
 type AppTabsProps = {
   current: 'visitas' | 'agenda';

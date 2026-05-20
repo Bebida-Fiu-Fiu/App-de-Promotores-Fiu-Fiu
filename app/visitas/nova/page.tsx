@@ -48,7 +48,7 @@ export default async function NewVisitPage({ searchParams }: NewVisitPageProps) 
     <main className="min-h-screen bg-[var(--background)] pb-28">
       <div className="mx-auto w-full max-w-xs px-4 pt-10">
         <Link
-          href={getHomePath(session.role)}
+          href={getHomePath(session.user.role)}
           className="flex w-fit items-center gap-2 text-sm font-medium text-white/70 transition hover:text-white"
         >
           <ArrowLeft size={18} />
@@ -58,8 +58,9 @@ export default async function NewVisitPage({ searchParams }: NewVisitPageProps) 
       <NewVisitForm
         initialClient={initialClient}
         initialData={{
-          establishment:
+          establishmentLabel:
             initialClient?.nickname || initialClient?.fantasy_name || initialClient?.client_name || '',
+          establishmentId: initialClient?.id ?? null,
         }}
       />
     </main>

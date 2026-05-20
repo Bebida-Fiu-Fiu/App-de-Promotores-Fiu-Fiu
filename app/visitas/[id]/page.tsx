@@ -1,11 +1,12 @@
 import Link from 'next/link';
-import Image from 'next/image';
 import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+import { VisitImageThumbnailGallery } from '@/components/visits/visit-image-thumbnail-gallery';
 import { getHomePath, getSession } from '@/lib/auth';
-import { pool } from '@/lib/db';
+import { getVisitById } from '@/lib/api/promotor';
+import { getHeaderFullName } from '@/lib/header-user';
 
 type VisitProduct = {
   name: string;
@@ -13,6 +14,28 @@ type VisitProduct = {
   unit: string;
   expirationDate: string;
 };
+
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
+
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function shouldDisplayIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
+}
 
 function formatDatabaseDateToDisplay(value: string | Date | null) {
   if (!value) {
@@ -39,58 +62,46 @@ export default async function VisitDetailsPage({
     redirect('/login');
   }
 
+  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
+
   const { id } = await params;
 
-  let fullName: string | null = null;
   let visit:
-    | {
+      | {
         establishment: string;
         visitDate: string;
         observation: string;
         products: VisitProduct[];
-        beforeImage: string;
-        afterImage: string;
+        beforeImages: string[];
+        afterImages: string[];
+        observation: string | null;
         isDraft: boolean;
         canEdit: boolean;
       }
     | null = null;
 
   try {
-    const client = await pool.connect();
-    try {
-      const [userResult, visitResult] = await Promise.all([
-        client.query('SELECT id, full_name FROM promotors WHERE email = $1', [session.email]),
-        client.query(
-          `SELECT v.establishment, v.visit_date, v.observation, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
-           FROM visits v
-           INNER JOIN promotors p ON p.id = v.promotor_id
-           WHERE v.id = $1 AND p.email = $2`,
-          [id, session.email]
-        ),
-      ]);
+    const currentVisit = await getVisitById(session.accessToken, Number(id));
 
-      fullName = userResult.rows[0]?.full_name ?? null;
-
-      if (visitResult.rowCount) {
-        const row = visitResult.rows[0];
-        visit = {
-          establishment: row.establishment ?? 'Rascunho sem estabelecimento',
-          visitDate: formatDatabaseDateToDisplay(row.visit_date),
-          observation: row.observation ?? '',
-          products: Array.isArray(row.products) ? row.products : [],
-          beforeImage: row.before_image ?? '',
-          afterImage: row.after_image ?? '',
-          isDraft: Boolean(row.is_draft),
-          canEdit:
-            Boolean(row.is_draft) ||
-            Date.now() - new Date(row.created_at).getTime() <= 7 * 24 * 60 * 60 * 1000,
-        };
-      }
-    } finally {
-      client.release();
+    if (currentVisit) {
+      visit = {
+        establishment: currentVisit.establishment ?? 'Rascunho sem estabelecimento',
+        visitDate: formatDatabaseDateToDisplay(currentVisit.visitDate),
+        products: currentVisit.products.map((product) => ({
+          ...product,
+          expirationDate: shouldDisplayIndefiniteExpiration(product.name, Number(product.quantity ?? 0))
+            ? 'indefinido'
+            : product.expirationDate,
+        })),
+        beforeImages: currentVisit.beforeImages ?? [],
+        afterImages: currentVisit.afterImages ?? [],
+        observation: currentVisit.observation,
+        isDraft: Boolean(currentVisit.isDraft),
+        canEdit: currentVisit.canEdit,
+      };
     }
   } catch (error) {
-    console.error('Visit details lookup error:', error);
+    console.error('Visit details API lookup error:', error);
   }
 
   if (!visit) {
@@ -133,11 +144,12 @@ export default async function VisitDetailsPage({
               {visit.isDraft && (
                 <DeleteDraftButton
                   visitId={Number(id)}
+                  redirectTo={getHomePath(session.user.role)}
                   className="inline-flex h-11 items-center justify-center rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
                 />
               )}
               <Link
-                href={getHomePath(session.role)}
+                href={getHomePath(session.user.role)}
                 className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
               >
                 Voltar
@@ -148,48 +160,30 @@ export default async function VisitDetailsPage({
 
         <div className="mt-6">
           {visit.observation && (
-            <article className="mb-6 rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-5 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
+            <div className="mb-6 rounded-[24px] border border-white/10 bg-white/[0.04] p-5 shadow-[0_16px_35px_rgba(0,0,0,0.16)]">
               <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
                 Observacao
               </p>
-              <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-white/85">
-                {visit.observation}
-              </p>
-            </article>
+              <p className="mt-3 text-sm leading-6 text-white/80">{visit.observation}</p>
+            </div>
           )}
 
-          {(visit.beforeImage || visit.afterImage) && (
-            <div className="mb-6 grid gap-4 sm:grid-cols-2">
-              {visit.beforeImage && (
-                <article className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-4 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
-                    Antes
-                  </p>
-                  <Image
-                    src={visit.beforeImage}
-                    alt="Imagem de antes da visita"
-                    width={1200}
-                    height={900}
-                    unoptimized
-                    className="mt-3 h-64 w-full rounded-[18px] object-cover"
-                  />
-                </article>
+          {(visit.beforeImages.length > 0 || visit.afterImages.length > 0) && (
+            <div className="mb-6 grid gap-4 lg:grid-cols-2">
+              {visit.beforeImages.length > 0 && (
+                <VisitImageThumbnailGallery
+                  images={visit.beforeImages}
+                  sectionTitle="Antes"
+                  altPrefix="Imagem de antes da visita"
+                />
               )}
 
-              {visit.afterImage && (
-                <article className="rounded-[24px] border border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))] p-4 shadow-[0_20px_45px_rgba(0,0,0,0.18)]">
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-white/55">
-                    Depois
-                  </p>
-                  <Image
-                    src={visit.afterImage}
-                    alt="Imagem de depois da visita"
-                    width={1200}
-                    height={900}
-                    unoptimized
-                    className="mt-3 h-64 w-full rounded-[18px] object-cover"
-                  />
-                </article>
+              {visit.afterImages.length > 0 && (
+                <VisitImageThumbnailGallery
+                  images={visit.afterImages}
+                  sectionTitle="Depois"
+                  altPrefix="Imagem de depois da visita"
+                />
               )}
             </div>
           )}

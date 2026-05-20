@@ -4,21 +4,30 @@ import { notFound, redirect } from 'next/navigation';
 
 import { NewVisitForm } from '@/components/visits/new-visit-form';
 import { getSession } from '@/lib/auth';
-import { pool } from '@/lib/db';
+import { getVisitById } from '@/lib/api/promotor';
+import type { PromotorVisitProduct } from '@/types/promotor';
 
-type EditableVisitProduct = {
-  name: string;
-  quantity: number;
-  packageType: 'unidade' | 'pack';
-  expirationDate: string;
-};
+const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
+  [
+    'Cajazinha',
+    'Abacaxi Cortelã',
+    'Tangerina com Acerola',
+    'Pomar',
+    'Pitaya com Melancia',
+  ].map((productName) => productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase())
+);
 
-type StoredVisitProduct = {
-  name?: string;
-  quantity?: number;
-  unit?: string;
-  expirationDate?: string;
-};
+function normalizeProductName(productName: string) {
+  return productName.trim().normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+}
+
+function shouldDisplayIndefiniteExpiration(productName: string, quantity: number) {
+  if (quantity === 0 && productName.trim()) {
+    return true;
+  }
+
+  return INDEFINITE_EXPIRATION_PRODUCTS.has(normalizeProductName(productName));
+}
 
 function formatDatabaseDateToDisplay(value: string | Date | null) {
   if (!value) {
@@ -56,65 +65,49 @@ export default async function EditVisitPage({
   const { id } = await params;
 
   let visit:
-    | {
-        establishment: string;
-        date: string;
+      | {
+        establishmentLabel: string;
+        establishmentId: number | null;
+        visitDate: string;
         observation: string;
-        products: EditableVisitProduct[];
-        beforeImage: string;
-        afterImage: string;
+        products: PromotorVisitProduct[];
+        beforeImages: string[];
+        afterImages: string[];
         isDraft: boolean;
         canEdit: boolean;
       }
     | null = null;
 
   try {
-    const client = await pool.connect();
-    try {
-      const result = await client.query(
-        `SELECT v.establishment, v.visit_date, v.observation, v.products, v.before_image, v.after_image, v.is_draft, v.created_at
-         FROM visits v
-         INNER JOIN promotors p ON p.id = v.promotor_id
-         WHERE v.id = $1 AND p.email = $2`,
-        [id, session.email]
-      );
+    const row = await getVisitById(session.accessToken, Number(id));
 
-      if (result.rowCount) {
-        const row = result.rows[0];
-        const canEdit =
-          Boolean(row.is_draft) ||
-          Date.now() - new Date(row.created_at).getTime() <= 7 * 24 * 60 * 60 * 1000;
-
-        visit = {
-          establishment: row.establishment ?? '',
-          date: formatDatabaseDateToDisplay(row.visit_date),
-          observation: row.observation ?? '',
-          beforeImage: row.before_image ?? '',
-          afterImage: row.after_image ?? '',
-          products: Array.isArray(row.products) && row.products.length > 0
-            ? (row.products as StoredVisitProduct[]).map((product) => ({
-                name: product.name ?? '',
-                quantity: Number(product.quantity ?? 0),
-                packageType: getPackageTypeForProduct(product.name ?? '', product.unit),
-                expirationDate: product.expirationDate ?? '',
-              }))
-            : [
-                {
-                  name: '',
-                  quantity: 0,
-                  packageType: 'unidade',
-                  expirationDate: '',
-                },
-              ],
-          isDraft: Boolean(row.is_draft),
-          canEdit,
-        };
-      }
-    } finally {
-      client.release();
+    if (row) {
+      visit = {
+        establishmentLabel: row.establishment ?? '',
+        establishmentId: row.establishmentId,
+        visitDate: formatDatabaseDateToDisplay(row.visitDate),
+        observation: row.observation ?? '',
+        beforeImages: row.beforeImages ?? [],
+        afterImages: row.afterImages ?? [],
+        products: Array.isArray(row.products)
+          ? row.products.map((product) => ({
+              name: product.name ?? '',
+              quantity: Number(product.quantity ?? 0),
+              unit: product.unit === 'pack' || product.unit === 'caixa' ? product.unit : 'unidade',
+              expirationDate: shouldDisplayIndefiniteExpiration(
+                product.name ?? '',
+                Number(product.quantity ?? 0)
+              )
+                ? 'indefinido'
+                : formatDatabaseDateToDisplay(product.expirationDate ?? ''),
+            }))
+          : [],
+        isDraft: Boolean(row.isDraft),
+        canEdit: row.canEdit,
+      };
     }
   } catch (error) {
-    console.error('Edit visit lookup error:', error);
+    console.error('Edit visit API lookup error:', error);
   }
 
   if (!visit) {
@@ -140,12 +133,13 @@ export default async function EditVisitPage({
         visitId={Number(id)}
         isDraft={visit.isDraft}
         initialData={{
-          establishment: visit.establishment,
-          date: visit.date,
+          establishmentLabel: visit.establishmentLabel,
+          establishmentId: visit.establishmentId,
+          visitDate: visit.visitDate,
           observation: visit.observation,
           products: visit.products,
-          beforeImage: visit.beforeImage,
-          afterImage: visit.afterImage,
+          beforeImages: visit.beforeImages,
+          afterImages: visit.afterImages,
         }}
       />
     </main>

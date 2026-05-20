@@ -4,7 +4,7 @@ import { notFound, redirect } from 'next/navigation';
 
 import { CommercialSubmissionForm } from '@/components/commercial/commercial-submission-form';
 import { getSession } from '@/lib/auth';
-import { getCommercialSubmissionById } from '@/lib/commercial';
+import { listAllCommercialVisits, listCommercialVisitsByComercialId } from '@/lib/api/comercial';
 
 export default async function EditCommercialSubmissionPage({
   params,
@@ -24,7 +24,11 @@ export default async function EditCommercialSubmissionPage({
     notFound();
   }
 
-  const submission = await getCommercialSubmissionById(submissionId);
+  const submissions =
+    typeof session.user.id === 'number'
+      ? await listCommercialVisitsByComercialId(session.accessToken, session.user.id).catch(() => [])
+      : await listAllCommercialVisits(session.accessToken).catch(() => []);
+  const submission = submissions.find((entry) => entry.id === submissionId) ?? null;
 
   if (!submission) {
     notFound();
