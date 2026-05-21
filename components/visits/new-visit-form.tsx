@@ -21,7 +21,7 @@ import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
 import { getSessionHomePath, searchClients } from '@/lib/actions';
-import { isAcceptedImageFile } from '@/lib/file-utils';
+import { isAcceptedImageFile, optimizeVisitImageFile } from '@/lib/file-utils';
 import type { PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
@@ -44,6 +44,8 @@ const PRODUCT_OPTIONS = [
 ] as const;
 
 const INDEFINITE_EXPIRATION_LABEL = 'indefinido';
+const MAX_IMAGES_PER_CATEGORY = 5;
+const MAX_IMAGE_SIZE_IN_BYTES = 10 * 1024 * 1024;
 
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
   [
@@ -342,13 +344,21 @@ function buildInitialGalleryState(images: string[] | undefined) {
     .map((imageUrl) => createImageState(imageUrl, imageUrl, null));
 }
 
+type SignedUploadResponse = {
+  filename: string;
+  contentType: string;
+  uploadUrl: string;
+  fileUrl: string;
+  key: string;
+};
+
 function buildVisitSubmitFormData(params: {
   establishment: number | null;
   visitDate: string | null;
   products: PromotorVisitProduct[];
   observation: string | null;
-  beforeImages: VisitImageGalleryState;
-  afterImages: VisitImageGalleryState;
+  beforeImages: string[];
+  afterImages: string[];
   isDraft: boolean;
 }) {
   const formData = new FormData();
@@ -358,27 +368,11 @@ function buildVisitSubmitFormData(params: {
     products: params.products,
     observation: params.observation,
     isDraft: params.isDraft,
-    beforeImages: params.beforeImages
-      .map((image) => image.existingValue)
-      .filter((image): image is string => Boolean(image)),
-    afterImages: params.afterImages
-      .map((image) => image.existingValue)
-      .filter((image): image is string => Boolean(image)),
+    beforeImages: params.beforeImages,
+    afterImages: params.afterImages,
   };
 
   formData.append('payload', JSON.stringify(payload));
-
-  for (const image of params.beforeImages) {
-    if (image.file) {
-      formData.append('beforeImageFiles', image.file, image.file.name);
-    }
-  }
-
-  for (const image of params.afterImages) {
-    if (image.file) {
-      formData.append('afterImageFiles', image.file, image.file.name);
-    }
-  }
 
   return formData;
 }
@@ -411,6 +405,100 @@ async function submitVisitFormData(formData: FormData, visitId?: number) {
   };
 }
 
+async function requestSignedUploads(params: {
+  files: File[];
+  imageType: 'before' | 'after';
+  visitDate: string | null;
+}) {
+  const response = await fetch('/api/promotor/visit/uploads', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      imageType: params.imageType,
+      visitDate: params.visitDate,
+      files: params.files.map((file) => ({
+        filename: file.name,
+        contentType: file.type || 'application/octet-stream',
+        size: file.size,
+      })),
+    }),
+  });
+  const payload = await response.json().catch(() => null);
+
+  if (!payload || typeof payload !== 'object' || !('success' in payload)) {
+    throw new Error('Nao foi possivel preparar o upload das imagens.');
+  }
+
+  const typedPayload = payload as {
+    success: boolean;
+    error?: string;
+    uploads?: SignedUploadResponse[];
+    shouldRedirectToLogin?: boolean;
+  };
+
+  if (!typedPayload.success) {
+    const error = new Error(typedPayload.error || 'Nao foi possivel preparar o upload das imagens.');
+    (error as Error & { shouldRedirectToLogin?: boolean }).shouldRedirectToLogin =
+      typedPayload.shouldRedirectToLogin;
+    throw error;
+  }
+
+  return typedPayload.uploads ?? [];
+}
+
+async function uploadGalleryFiles(
+  images: VisitImageGalleryState,
+  imageType: 'before' | 'after',
+  visitDate: string | null
+) {
+  const existingImages = images
+    .map((image) => image.existingValue)
+    .filter((image): image is string => Boolean(image));
+  const newFiles = images
+    .map((image) => image.file)
+    .filter((file): file is File => file instanceof File);
+
+  if (newFiles.length === 0) {
+    return existingImages;
+  }
+
+  const optimizedFiles: File[] = [];
+
+  for (const file of newFiles) {
+    optimizedFiles.push(await optimizeVisitImageFile(file));
+  }
+
+  const uploads = await requestSignedUploads({
+    files: optimizedFiles,
+    imageType,
+    visitDate,
+  });
+
+  if (uploads.length !== optimizedFiles.length) {
+    throw new Error('Nao foi possivel preparar todas as imagens para upload.');
+  }
+
+  for (let index = 0; index < optimizedFiles.length; index += 1) {
+    const file = optimizedFiles[index];
+    const upload = uploads[index];
+    const uploadResponse = await fetch(upload.uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': file.type || upload.contentType || 'application/octet-stream',
+      },
+      body: file,
+    });
+
+    if (!uploadResponse.ok) {
+      throw new Error('Nao foi possivel enviar uma das imagens selecionadas.');
+    }
+  }
+
+  return [...existingImages, ...uploads.map((upload) => upload.fileUrl)];
+}
+
 function VisitImageGalleryField({
   idPrefix,
   label,
@@ -439,6 +527,20 @@ function VisitImageGalleryField({
 
     if (invalidFile) {
       setFieldError('Selecione um arquivo de imagem valido.');
+      event.target.value = '';
+      return;
+    }
+
+    if (images.length + selectedFiles.length > MAX_IMAGES_PER_CATEGORY) {
+      setFieldError(`Voce pode adicionar no maximo ${MAX_IMAGES_PER_CATEGORY} fotos em ${label.toLowerCase()}.`);
+      event.target.value = '';
+      return;
+    }
+
+    const oversizedFile = selectedFiles.find((file) => file.size > MAX_IMAGE_SIZE_IN_BYTES);
+
+    if (oversizedFile) {
+      setFieldError('Cada foto deve ter no maximo 10 MB.');
       event.target.value = '';
       return;
     }
@@ -779,6 +881,18 @@ export function NewVisitForm({
   };
 
   const validateBeforeSubmit = (values: VisitFormValues, mode: 'draft' | 'final') => {
+    if (beforeImages.length > MAX_IMAGES_PER_CATEGORY || afterImages.length > MAX_IMAGES_PER_CATEGORY) {
+      return `Envie no maximo ${MAX_IMAGES_PER_CATEGORY} fotos em cada categoria.`;
+    }
+
+    const oversizedImage = [...beforeImages, ...afterImages].find(
+      (image) => image.file && image.file.size > MAX_IMAGE_SIZE_IN_BYTES
+    );
+
+    if (oversizedImage) {
+      return 'Cada foto deve ter no maximo 10 MB.';
+    }
+
     if (mode === 'final' && !values.establishmentId) {
       return 'Selecione um estabelecimento antes de enviar a visita.';
     }
@@ -828,6 +942,8 @@ export function NewVisitForm({
     const visitDateIso = values.visitDate ? displayDateToIso(values.visitDate) : null;
 
     try {
+      const uploadedBeforeImages = await uploadGalleryFiles(beforeImages, 'before', visitDateIso);
+      const uploadedAfterImages = await uploadGalleryFiles(afterImages, 'after', visitDateIso);
       const payload = {
         establishment: values.establishmentId,
         visitDate: visitDateIso,
@@ -840,8 +956,8 @@ export function NewVisitForm({
               : (displayDateToIso(product.expirationDate) ?? product.expirationDate),
           })) as PromotorVisitProduct[],
         observation: values.observation.trim() || null,
-        beforeImages,
-        afterImages,
+        beforeImages: uploadedBeforeImages,
+        afterImages: uploadedAfterImages,
         isDraft: mode === 'draft',
       } as const;
 
@@ -888,6 +1004,14 @@ export function NewVisitForm({
       }
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : null;
+      if (
+        error &&
+        typeof error === 'object' &&
+        'shouldRedirectToLogin' in error &&
+        (error as { shouldRedirectToLogin?: boolean }).shouldRedirectToLogin
+      ) {
+        router.replace('/login');
+      }
       setFormError(getFriendlyApiMessage(errorMessage));
     }
   };

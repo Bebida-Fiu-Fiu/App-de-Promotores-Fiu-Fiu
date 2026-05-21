@@ -154,6 +154,10 @@ async function compressImage(file: File) {
   }
 }
 
+export async function optimizeVisitImageFile(file: File) {
+  return compressImage(file);
+}
+
 export async function fileToVisitImageUpload(file: File): Promise<PromotorVisitImageUpload> {
   const optimizedFile = await compressImage(file);
   const contentType = optimizedFile.type || inferMimeTypeFromFilename(optimizedFile.name) || 'application/octet-stream';
