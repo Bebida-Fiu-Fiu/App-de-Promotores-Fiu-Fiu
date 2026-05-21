@@ -20,9 +20,15 @@ import { z } from 'zod';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
+<<<<<<< HEAD
 import { getSessionHomePath, searchClients } from '@/lib/actions';
 import { isAcceptedImageFile } from '@/lib/file-utils';
 import type { PromotorVisitProduct } from '@/types/promotor';
+=======
+import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
+import { isAcceptedImageFile, mapFilesToUploadPayload } from '@/lib/file-utils';
+import type { PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
+>>>>>>> cbceb945ec06c804feb5ede3edcef237171b98a6
 
 const PRODUCT_OPTIONS = [
   'Cajazinha',
