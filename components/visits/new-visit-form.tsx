@@ -21,7 +21,7 @@ import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
 import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
-import { mapFilesToUploadPayload } from '@/lib/file-utils';
+import { isAcceptedImageFile, mapFilesToUploadPayload } from '@/lib/file-utils';
 import type { PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
@@ -378,7 +378,7 @@ function VisitImageGalleryField({
       return;
     }
 
-    const invalidFile = selectedFiles.find((file) => !file.type.startsWith('image/'));
+    const invalidFile = selectedFiles.find((file) => !isAcceptedImageFile(file));
 
     if (invalidFile) {
       setFieldError('Selecione um arquivo de imagem valido.');
@@ -410,7 +410,7 @@ function VisitImageGalleryField({
         ref={inputRef}
         id={`${idPrefix}-input`}
         type="file"
-        accept="image/*"
+        accept="image/*,.avif,.bmp,.cr2,.cr3,.dng,.gif,.heic,.heif,.ico,.jfif,.jpe,.jpeg,.jpg,.nef,.nrw,.orf,.pef,.png,.psd,.raf,.raw,.rw2,.sr2,.srw,.svg,.tif,.tiff,.webp"
         multiple
         className="sr-only"
         onChange={handleFileChange}
