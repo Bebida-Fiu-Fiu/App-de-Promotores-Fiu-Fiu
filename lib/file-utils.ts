@@ -36,27 +36,6 @@ const MIME_TYPE_BY_EXTENSION = new Map<string, string>([
   ['.tiff', 'image/tiff'],
   ['.webp', 'image/webp'],
 ]);
-<<<<<<< HEAD
-=======
-
-function getFilenameExtension(filename: string) {
-  const extensionIndex = filename.lastIndexOf('.');
-
-  if (extensionIndex < 0) {
-    return '';
-  }
-
-  return filename.slice(extensionIndex).toLowerCase();
-}
-
-export function isAcceptedImageFile(file: Pick<File, 'name' | 'type'>) {
-  return file.type.startsWith('image/') || IMAGE_FILENAME_EXTENSION_PATTERN.test(file.name);
-}
-
-export function inferMimeTypeFromFilename(filename: string) {
-  return MIME_TYPE_BY_EXTENSION.get(getFilenameExtension(filename)) ?? '';
-}
->>>>>>> cbceb945ec06c804feb5ede3edcef237171b98a6
 
 function getFilenameExtension(filename: string) {
   const extensionIndex = filename.lastIndexOf('.');
@@ -116,7 +95,6 @@ async function compressImage(file: File) {
     return file;
   }
 
-<<<<<<< HEAD
   let source = '';
 
   try {
@@ -138,27 +116,6 @@ async function compressImage(file: File) {
 
     context.drawImage(image, 0, 0, targetWidth, targetHeight);
 
-=======
-  try {
-    const source = await readFileAsDataUrl(file);
-    const image = await loadImageElement(source);
-    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(image.width, image.height));
-    const targetWidth = Math.max(1, Math.round(image.width * scale));
-    const targetHeight = Math.max(1, Math.round(image.height * scale));
-    const canvas = document.createElement('canvas');
-
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-
-    const context = canvas.getContext('2d');
-
-    if (!context) {
-      return file;
-    }
-
-    context.drawImage(image, 0, 0, targetWidth, targetHeight);
-
->>>>>>> cbceb945ec06c804feb5ede3edcef237171b98a6
     let quality = DEFAULT_IMAGE_QUALITY;
     let compressedBlob = await new Promise<Blob | null>((resolve) => {
       canvas.toBlob(resolve, 'image/jpeg', quality);
@@ -176,7 +133,6 @@ async function compressImage(file: File) {
     }
 
     if (compressedBlob.size >= file.size && scale === 1) {
-<<<<<<< HEAD
       canvas.width = 0;
       canvas.height = 0;
       return file;
@@ -185,11 +141,6 @@ async function compressImage(file: File) {
     canvas.width = 0;
     canvas.height = 0;
 
-=======
-      return file;
-    }
-
->>>>>>> cbceb945ec06c804feb5ede3edcef237171b98a6
     return new File([compressedBlob], buildUploadFilename(file), {
       type: 'image/jpeg',
       lastModified: file.lastModified,
