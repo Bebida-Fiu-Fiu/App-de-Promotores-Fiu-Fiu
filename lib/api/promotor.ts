@@ -43,6 +43,55 @@ function toNullableString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value : null;
 }
 
+function sanitizeVisitImageUrl(value: string) {
+  const trimmedValue = value.trim();
+  if (!trimmedValue.includes('://')) {
+    return trimmedValue;
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedValue);
+    const isS3Host = /^([^.]+)\.s3(?:[.-][a-z0-9-]+)?\.amazonaws\.com$/i.test(parsedUrl.hostname);
+
+    if (isS3Host) {
+      let candidatePathname = parsedUrl.pathname;
+
+      for (let i = 0; i < 3; i += 1) {
+        const questionMarkIndex = candidatePathname.indexOf('?');
+        if (questionMarkIndex >= 0) {
+          candidatePathname = candidatePathname.slice(0, questionMarkIndex);
+          break;
+        }
+
+        const encodedQueryMarkerMatch = candidatePathname.match(/%253[fF]|%3[fF]/);
+        if (encodedQueryMarkerMatch?.index !== undefined) {
+          candidatePathname = candidatePathname.slice(0, encodedQueryMarkerMatch.index);
+          break;
+        }
+
+        try {
+          const decodedPathname = decodeURIComponent(candidatePathname);
+          if (decodedPathname === candidatePathname) {
+            break;
+          }
+
+          candidatePathname = decodedPathname;
+        } catch {
+          break;
+        }
+      }
+
+      if (candidatePathname !== parsedUrl.pathname) {
+        parsedUrl.pathname = candidatePathname;
+      }
+    }
+
+    return parsedUrl.toString();
+  } catch {
+    return trimmedValue;
+  }
+}
+
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
   [
     'Cajazinha',
@@ -349,7 +398,7 @@ function normalizeImageUrlArray(value: unknown) {
     return value
       .map((item) => {
         if (typeof item === 'string') {
-          return item.trim();
+          return sanitizeVisitImageUrl(item);
         }
 
         if (isRecord(item)) {
@@ -375,6 +424,7 @@ function normalizeImageUrlArray(value: unknown) {
 
         return '';
       })
+      .map((item) => sanitizeVisitImageUrl(item))
       .filter(Boolean);
   }
 

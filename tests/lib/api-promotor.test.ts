@@ -198,4 +198,32 @@ describe('promotor api', () => {
       'https://cdn.example.com/after-4.jpg',
     ]);
   });
+
+  it('sanitizes corrupted signed S3 urls embedded in image paths', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          visit: {
+            id: 102,
+            establishment: 'Cliente Teste',
+            beforeImages: [
+              'https://visit-bucket.s3.sa-east-1.amazonaws.com/visits/promotors/17/2026-05-21/before/photo.jpg%3FX-Amz-Algorithm%3DAWS4-HMAC-SHA256%26X-Amz-Signature%3Dold?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=new',
+            ],
+            afterImages: [],
+            products: [],
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+
+    const result = await getVisitById('token-123', 102);
+
+    expect(result?.beforeImages).toEqual([
+      'https://visit-bucket.s3.sa-east-1.amazonaws.com/visits/promotors/17/2026-05-21/before/photo.jpg?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=new',
+    ]);
+  });
 });

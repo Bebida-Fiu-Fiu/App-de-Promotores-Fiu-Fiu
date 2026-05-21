@@ -20,9 +20,9 @@ import { z } from 'zod';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
-import { getSessionHomePath, searchClients } from '@/lib/actions';
-import { isAcceptedImageFile, optimizeVisitImageFile } from '@/lib/file-utils';
-import type { PromotorVisitProduct } from '@/types/promotor';
+import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
+import { isAcceptedImageFile, mapFilesToUploadPayload, optimizeVisitImageFile } from '@/lib/file-utils';
+import type { PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
   'Cajazinha',
@@ -499,6 +499,28 @@ async function uploadGalleryFiles(
   return [...existingImages, ...uploads.map((upload) => upload.fileUrl)];
 }
 
+async function mapGalleryToLegacyPayload(images: VisitImageGalleryState): Promise<PromotorVisitImageArrayInput> {
+  const existingImages = images
+    .map((image) => image.existingValue)
+    .filter((image): image is string => Boolean(image));
+  const newFiles = images
+    .map((image) => image.file)
+    .filter((file): file is File => file instanceof File);
+  const uploadedFiles = await mapFilesToUploadPayload(newFiles);
+
+  return [...existingImages, ...uploadedFiles];
+}
+
+function shouldUseLegacyVisitFallback(error: unknown) {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const normalizedMessage = error.message.trim().toLowerCase();
+
+  return normalizedMessage === 'not found' || normalizedMessage.includes('404');
+}
+
 function VisitImageGalleryField({
   idPrefix,
   label,
@@ -940,28 +962,59 @@ export function NewVisitForm({
     }
 
     const visitDateIso = values.visitDate ? displayDateToIso(values.visitDate) : null;
+    const normalizedProducts = values.products
+      .filter((product) => isCompleteProduct(product))
+      .map((product) => ({
+        ...product,
+        expirationDate: isIndefiniteExpirationValue(product.expirationDate)
+          ? INDEFINITE_EXPIRATION_LABEL
+          : (displayDateToIso(product.expirationDate) ?? product.expirationDate),
+      })) as PromotorVisitProduct[];
+    const observation = values.observation.trim() || null;
 
     try {
-      const uploadedBeforeImages = await uploadGalleryFiles(beforeImages, 'before', visitDateIso);
-      const uploadedAfterImages = await uploadGalleryFiles(afterImages, 'after', visitDateIso);
-      const payload = {
-        establishment: values.establishmentId,
-        visitDate: visitDateIso,
-        products: values.products
-          .filter((product) => isCompleteProduct(product))
-          .map((product) => ({
-            ...product,
-            expirationDate: isIndefiniteExpirationValue(product.expirationDate)
-              ? INDEFINITE_EXPIRATION_LABEL
-              : (displayDateToIso(product.expirationDate) ?? product.expirationDate),
-          })) as PromotorVisitProduct[],
-        observation: values.observation.trim() || null,
-        beforeImages: uploadedBeforeImages,
-        afterImages: uploadedAfterImages,
-        isDraft: mode === 'draft',
-      } as const;
+      let result:
+        | {
+          success: boolean;
+          error?: string;
+          visitId?: number;
+          shouldRedirectToLogin?: boolean;
+        };
 
-      const result = await submitVisitFormData(buildVisitSubmitFormData(payload), visitId);
+      try {
+        const uploadedBeforeImages = await uploadGalleryFiles(beforeImages, 'before', visitDateIso);
+        const uploadedAfterImages = await uploadGalleryFiles(afterImages, 'after', visitDateIso);
+        const payload = {
+          establishment: values.establishmentId,
+          visitDate: visitDateIso,
+          products: normalizedProducts,
+          observation,
+          beforeImages: uploadedBeforeImages,
+          afterImages: uploadedAfterImages,
+          isDraft: mode === 'draft',
+        };
+
+        result = await submitVisitFormData(buildVisitSubmitFormData(payload), visitId);
+      } catch (error) {
+        if (!shouldUseLegacyVisitFallback(error)) {
+          throw error;
+        }
+
+        const legacyPayload = {
+          establishment: values.establishmentId,
+          visitDate: visitDateIso,
+          products: normalizedProducts,
+          observation,
+          beforeImages: await mapGalleryToLegacyPayload(beforeImages),
+          afterImages: await mapGalleryToLegacyPayload(afterImages),
+          isDraft: mode === 'draft',
+        } as const;
+
+        result =
+          mode === 'draft'
+            ? await saveVisitDraft(legacyPayload, visitId)
+            : await createVisit(legacyPayload, visitId);
+      }
 
       if (!result.success) {
         setFormError(getFriendlyApiMessage(result.error));
