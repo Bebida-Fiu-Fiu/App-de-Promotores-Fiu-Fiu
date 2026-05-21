@@ -20,9 +20,9 @@ import { z } from 'zod';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
-import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
-import { mapFilesToUploadPayload } from '@/lib/file-utils';
-import type { PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
+import { getSessionHomePath, searchClients } from '@/lib/actions';
+import { isAcceptedImageFile } from '@/lib/file-utils';
+import type { PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
   'Cajazinha',
@@ -342,16 +342,73 @@ function buildInitialGalleryState(images: string[] | undefined) {
     .map((imageUrl) => createImageState(imageUrl, imageUrl, null));
 }
 
-async function mapGalleryToPayload(images: VisitImageGalleryState): Promise<PromotorVisitImageArrayInput> {
-  const existingImages = images
-    .map((image) => image.existingValue)
-    .filter((image): image is string => Boolean(image));
-  const newFiles = images
-    .map((image) => image.file)
-    .filter((file): file is File => file instanceof File);
-  const uploadedFiles = await mapFilesToUploadPayload(newFiles);
+function buildVisitSubmitFormData(params: {
+  establishment: number | null;
+  visitDate: string | null;
+  products: PromotorVisitProduct[];
+  observation: string | null;
+  beforeImages: VisitImageGalleryState;
+  afterImages: VisitImageGalleryState;
+  isDraft: boolean;
+}) {
+  const formData = new FormData();
+  const payload = {
+    establishment: params.establishment,
+    visitDate: params.visitDate,
+    products: params.products,
+    observation: params.observation,
+    isDraft: params.isDraft,
+    beforeImages: params.beforeImages
+      .map((image) => image.existingValue)
+      .filter((image): image is string => Boolean(image)),
+    afterImages: params.afterImages
+      .map((image) => image.existingValue)
+      .filter((image): image is string => Boolean(image)),
+  };
 
-  return [...existingImages, ...uploadedFiles];
+  formData.append('payload', JSON.stringify(payload));
+
+  for (const image of params.beforeImages) {
+    if (image.file) {
+      formData.append('beforeImageFiles', image.file, image.file.name);
+    }
+  }
+
+  for (const image of params.afterImages) {
+    if (image.file) {
+      formData.append('afterImageFiles', image.file, image.file.name);
+    }
+  }
+
+  return formData;
+}
+
+async function submitVisitFormData(formData: FormData, visitId?: number) {
+  const endpoint = visitId ? `/api/promotor/visit/${visitId}` : '/api/promotor/visit';
+  const response = await fetch(endpoint, {
+    method: visitId ? 'PUT' : 'POST',
+    body: formData,
+  });
+  const payload = await response.json().catch(() => null);
+
+  if (
+    payload &&
+    typeof payload === 'object' &&
+    'success' in payload &&
+    typeof payload.success === 'boolean'
+  ) {
+    return payload as {
+      success: boolean;
+      error?: string;
+      visitId?: number;
+      shouldRedirectToLogin?: boolean;
+    };
+  }
+
+  return {
+    success: false,
+    error: response.ok ? 'Nao foi possivel salvar a visita.' : `Erro ${response.status}.`,
+  };
 }
 
 function VisitImageGalleryField({
@@ -378,7 +435,7 @@ function VisitImageGalleryField({
       return;
     }
 
-    const invalidFile = selectedFiles.find((file) => !file.type.startsWith('image/'));
+    const invalidFile = selectedFiles.find((file) => !isAcceptedImageFile(file));
 
     if (invalidFile) {
       setFieldError('Selecione um arquivo de imagem valido.');
@@ -410,7 +467,7 @@ function VisitImageGalleryField({
         ref={inputRef}
         id={`${idPrefix}-input`}
         type="file"
-        accept="image/*"
+        accept="image/*,.avif,.bmp,.cr2,.cr3,.dng,.gif,.heic,.heif,.ico,.jfif,.jpe,.jpeg,.jpg,.nef,.nrw,.orf,.pef,.png,.psd,.raf,.raw,.rw2,.sr2,.srw,.svg,.tif,.tiff,.webp"
         multiple
         className="sr-only"
         onChange={handleFileChange}
@@ -783,15 +840,12 @@ export function NewVisitForm({
               : (displayDateToIso(product.expirationDate) ?? product.expirationDate),
           })) as PromotorVisitProduct[],
         observation: values.observation.trim() || null,
-        beforeImages: await mapGalleryToPayload(beforeImages),
-        afterImages: await mapGalleryToPayload(afterImages),
+        beforeImages,
+        afterImages,
         isDraft: mode === 'draft',
       } as const;
 
-      const result =
-        mode === 'draft'
-          ? await saveVisitDraft(payload, visitId)
-          : await createVisit(payload, visitId);
+      const result = await submitVisitFormData(buildVisitSubmitFormData(payload), visitId);
 
       if (!result.success) {
         setFormError(getFriendlyApiMessage(result.error));

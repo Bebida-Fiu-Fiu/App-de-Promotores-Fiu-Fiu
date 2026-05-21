@@ -4,36 +4,76 @@ const MAX_IMAGE_DIMENSION = 1600;
 const TARGET_IMAGE_SIZE_IN_BYTES = 900 * 1024;
 const DEFAULT_IMAGE_QUALITY = 0.78;
 const MIN_IMAGE_QUALITY = 0.52;
+const IMAGE_FILENAME_EXTENSION_PATTERN =
+  /\.(avif|bmp|cr2|cr3|dng|gif|heic|heif|ico|jfif|jpe|jpeg|jpg|nef|nrw|orf|pef|png|psd|raf|raw|rw2|sr2|srw|svg|tif|tiff|webp)$/i;
+const MIME_TYPE_BY_EXTENSION = new Map<string, string>([
+  ['.avif', 'image/avif'],
+  ['.bmp', 'image/bmp'],
+  ['.cr2', 'image/x-canon-cr2'],
+  ['.cr3', 'image/x-canon-cr3'],
+  ['.dng', 'image/x-adobe-dng'],
+  ['.gif', 'image/gif'],
+  ['.heic', 'image/heic'],
+  ['.heif', 'image/heif'],
+  ['.ico', 'image/x-icon'],
+  ['.jfif', 'image/jpeg'],
+  ['.jpe', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.jpg', 'image/jpeg'],
+  ['.nef', 'image/x-nikon-nef'],
+  ['.nrw', 'image/x-nikon-nrw'],
+  ['.orf', 'image/x-olympus-orf'],
+  ['.pef', 'image/x-pentax-pef'],
+  ['.png', 'image/png'],
+  ['.psd', 'image/vnd.adobe.photoshop'],
+  ['.raf', 'image/x-fuji-raf'],
+  ['.raw', 'image/x-panasonic-raw'],
+  ['.rw2', 'image/x-panasonic-rw2'],
+  ['.sr2', 'image/x-sony-sr2'],
+  ['.srw', 'image/x-samsung-srw'],
+  ['.svg', 'image/svg+xml'],
+  ['.tif', 'image/tiff'],
+  ['.tiff', 'image/tiff'],
+  ['.webp', 'image/webp'],
+]);
 
-export async function fileToBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
+function getFilenameExtension(filename: string) {
+  const extensionIndex = filename.lastIndexOf('.');
 
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const [, base64 = ''] = result.split(',');
-      resolve(base64);
-    };
-    reader.onerror = () => reject(new Error('Nao foi possivel ler o arquivo selecionado.'));
-    reader.readAsDataURL(file);
-  });
+  if (extensionIndex < 0) {
+    return '';
+  }
+
+  return filename.slice(extensionIndex).toLowerCase();
 }
 
-async function readFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
+export function isAcceptedImageFile(file: Pick<File, 'name' | 'type'>) {
+  return file.type.startsWith('image/') || IMAGE_FILENAME_EXTENSION_PATTERN.test(file.name);
+}
 
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        resolve(reader.result);
-        return;
-      }
+export function inferMimeTypeFromFilename(filename: string) {
+  return MIME_TYPE_BY_EXTENSION.get(getFilenameExtension(filename)) ?? '';
+}
 
-      reject(new Error('Nao foi possivel preparar a imagem selecionada.'));
-    };
-    reader.onerror = () => reject(new Error('Nao foi possivel ler o arquivo selecionado.'));
-    reader.readAsDataURL(file);
-  });
+function arrayBufferToBase64(buffer: ArrayBuffer) {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
+export async function fileToBase64(file: File) {
+  try {
+    return arrayBufferToBase64(await file.arrayBuffer());
+  } catch {
+    throw new Error('Nao foi possivel ler o arquivo selecionado.');
+  }
 }
 
 async function loadImageElement(source: string) {
@@ -51,64 +91,86 @@ function buildUploadFilename(file: File) {
 }
 
 async function compressImage(file: File) {
-  if (!file.type.startsWith('image/')) {
+  if (!isAcceptedImageFile(file)) {
     return file;
   }
 
-  const source = await readFileAsDataUrl(file);
-  const image = await loadImageElement(source);
-  const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(image.width, image.height));
-  const targetWidth = Math.max(1, Math.round(image.width * scale));
-  const targetHeight = Math.max(1, Math.round(image.height * scale));
-  const canvas = document.createElement('canvas');
+  let source = '';
 
-  canvas.width = targetWidth;
-  canvas.height = targetHeight;
+  try {
+    source = URL.createObjectURL(file);
+    const image = await loadImageElement(source);
+    const scale = Math.min(1, MAX_IMAGE_DIMENSION / Math.max(image.width, image.height));
+    const targetWidth = Math.max(1, Math.round(image.width * scale));
+    const targetHeight = Math.max(1, Math.round(image.height * scale));
+    const canvas = document.createElement('canvas');
 
-  const context = canvas.getContext('2d');
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
 
-  if (!context) {
-    throw new Error('Nao foi possivel preparar a imagem selecionada.');
-  }
+    const context = canvas.getContext('2d');
 
-  context.drawImage(image, 0, 0, targetWidth, targetHeight);
+    if (!context) {
+      return file;
+    }
 
-  let quality = DEFAULT_IMAGE_QUALITY;
-  let compressedBlob = await new Promise<Blob | null>((resolve) => {
-    canvas.toBlob(resolve, 'image/jpeg', quality);
-  });
+    context.drawImage(image, 0, 0, targetWidth, targetHeight);
 
-  while (compressedBlob && compressedBlob.size > TARGET_IMAGE_SIZE_IN_BYTES && quality > MIN_IMAGE_QUALITY) {
-    quality = Math.max(MIN_IMAGE_QUALITY, quality - 0.08);
-    compressedBlob = await new Promise<Blob | null>((resolve) => {
+    let quality = DEFAULT_IMAGE_QUALITY;
+    let compressedBlob = await new Promise<Blob | null>((resolve) => {
       canvas.toBlob(resolve, 'image/jpeg', quality);
     });
-  }
 
-  if (!compressedBlob) {
-    throw new Error('Nao foi possivel compactar a imagem selecionada.');
-  }
+    while (compressedBlob && compressedBlob.size > TARGET_IMAGE_SIZE_IN_BYTES && quality > MIN_IMAGE_QUALITY) {
+      quality = Math.max(MIN_IMAGE_QUALITY, quality - 0.08);
+      compressedBlob = await new Promise<Blob | null>((resolve) => {
+        canvas.toBlob(resolve, 'image/jpeg', quality);
+      });
+    }
 
-  if (compressedBlob.size >= file.size && scale === 1) {
+    if (!compressedBlob) {
+      return file;
+    }
+
+    if (compressedBlob.size >= file.size && scale === 1) {
+      canvas.width = 0;
+      canvas.height = 0;
+      return file;
+    }
+
+    canvas.width = 0;
+    canvas.height = 0;
+
+    return new File([compressedBlob], buildUploadFilename(file), {
+      type: 'image/jpeg',
+      lastModified: file.lastModified,
+    });
+  } catch {
     return file;
+  } finally {
+    if (source) {
+      URL.revokeObjectURL(source);
+    }
   }
-
-  return new File([compressedBlob], buildUploadFilename(file), {
-    type: 'image/jpeg',
-    lastModified: file.lastModified,
-  });
 }
 
 export async function fileToVisitImageUpload(file: File): Promise<PromotorVisitImageUpload> {
   const optimizedFile = await compressImage(file);
+  const contentType = optimizedFile.type || inferMimeTypeFromFilename(optimizedFile.name) || 'application/octet-stream';
 
   return {
     filename: optimizedFile.name,
-    contentType: optimizedFile.type || 'application/octet-stream',
+    contentType,
     base64: await fileToBase64(optimizedFile),
   };
 }
 
 export async function mapFilesToUploadPayload(files: File[]) {
-  return Promise.all(files.map((file) => fileToVisitImageUpload(file)));
+  const uploads: PromotorVisitImageUpload[] = [];
+
+  for (const file of files) {
+    uploads.push(await fileToVisitImageUpload(file));
+  }
+
+  return uploads;
 }

@@ -144,17 +144,23 @@ export async function apiRequestWithMeta<T>(path: string, options: ApiRequestOpt
   }
 
   let body: BodyInit | undefined;
+  const isFormDataBody =
+    typeof FormData !== 'undefined' && options.body instanceof FormData;
 
   if (options.body !== undefined) {
-    headers.set('Content-Type', 'application/json');
-    body = JSON.stringify(options.body);
+    if (isFormDataBody) {
+      body = options.body as FormData;
+    } else {
+      headers.set('Content-Type', 'application/json');
+      body = JSON.stringify(options.body);
+    }
   }
 
   console.log('[FIU-FIU API REQUEST]', {
     method: options.method ?? 'GET',
     url,
     headers: Object.fromEntries(headers.entries()),
-    body: formatLogValue(options.body ?? null),
+    body: isFormDataBody ? '[FormData]' : formatLogValue(options.body ?? null),
   });
 
   const response = await fetch(url, {
