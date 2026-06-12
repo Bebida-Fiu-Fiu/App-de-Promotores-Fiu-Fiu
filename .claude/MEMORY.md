@@ -1,0 +1,1 @@
+- [Password Recovery - Promoters](skills/password-recovery-promoters.md) — 3-step recovery flow with code verification, 15-min expiration, backend integration

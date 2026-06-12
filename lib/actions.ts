@@ -15,6 +15,9 @@ import {
   signInPromotor,
   signUpPromotor,
   updatePromotorVisit,
+  requestApiPasswordRecovery,
+  verifyApiRecoveryCode,
+  resetApiPassword,
 } from '@/lib/api/promotor';
 import { createCommercialVisit, updateCommercialVisit } from '@/lib/api/comercial';
 
@@ -29,6 +32,25 @@ const signupSchema = loginSchema.extend({
   role: z.enum(['promotor', 'comercial']),
 }).refine((data) => data.password === data.confirmPassword, {
   message: 'Passwords do not match',
+  path: ['confirmPassword'],
+});
+
+const recoveryRequestSchema = z.object({
+  email: z.string().email(),
+});
+
+const recoveryVerifySchema = z.object({
+  email: z.string().email(),
+  code: z.string().length(6),
+});
+
+const recoveryResetSchema = z.object({
+  email: z.string().email(),
+  code: z.string().length(6),
+  password: z.string().min(8, 'A senha deve ter pelo menos 8 caracteres'),
+  confirmPassword: z.string().min(8, 'A senha deve ter pelo menos 8 caracteres'),
+}).refine((data) => data.password === data.confirmPassword, {
+  message: 'As senhas nao coincidem',
   path: ['confirmPassword'],
 });
 
@@ -1044,5 +1066,46 @@ export async function skipWeeklyVehicleCheck() {
       };
     }
     return { success: false, error: 'Nao foi possivel registrar o pulo da quilometragem.' };
+  }
+}
+
+/**
+ * Fluxo de Recuperação de Senha
+ */
+
+export async function requestPasswordRecovery(email: string) {
+  const validation = recoveryRequestSchema.safeParse({ email });
+  if (!validation.success) return { success: false, error: 'E-mail invalido.' };
+
+  try {
+    await requestApiPasswordRecovery(validation.data.email);
+    return { success: true };
+  } catch (error) {
+    console.error(error);
+    return { success: false, error: error instanceof ApiError ? error.message : 'Erro ao solicitar codigo de recuperacao.' };
+  }
+}
+
+export async function verifyRecoveryCode(email: string, code: string) {
+  const validation = recoveryVerifySchema.safeParse({ email, code });
+  if (!validation.success) return { success: false, error: 'Dados invalidos.' };
+
+  try {
+    const result = await verifyApiRecoveryCode(validation.data.email, validation.data.code);
+    return { success: result.valid, error: result.valid ? null : 'Codigo invalido ou expirado.' };
+  } catch (error) {
+    return { success: false, error: error instanceof ApiError ? error.message : 'Erro ao verificar codigo.' };
+  }
+}
+
+export async function resetPassword(data: z.infer<typeof recoveryResetSchema>) {
+  const validation = recoveryResetSchema.safeParse(data);
+  if (!validation.success) return { success: false, error: validation.error.issues[0].message };
+
+  try {
+    await resetApiPassword(validation.data);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error instanceof ApiError ? error.message : 'Erro ao redefinir a senha.' };
   }
 }

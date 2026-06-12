@@ -783,3 +783,39 @@ export async function listPromotorMileage(token: string) {
     normalizeMileageRecord
   );
 }
+
+export async function requestApiPasswordRecovery(email: string) {
+  await apiRequest('/password-recovery/request', {
+    method: 'POST',
+    body: { email },
+  });
+  return true;
+}
+
+export async function verifyApiRecoveryCode(email: string, code: string) {
+  const response = await apiRequest('/password-recovery/verify', {
+    method: 'POST',
+    body: { email, code },
+  });
+
+  return {
+    valid: isRecord(response) ? Boolean(response.valid ?? response.success) : false,
+  };
+}
+
+export async function resetApiPassword(payload: {
+  email: string;
+  code: string;
+  password: string;
+}) {
+  await apiRequest('/password-recovery/reset', {
+    method: 'POST',
+    body: {
+      email: payload.email,
+      code: payload.code,
+      password: payload.password,
+      newPassword: payload.password,
+    },
+  });
+  return true;
+}

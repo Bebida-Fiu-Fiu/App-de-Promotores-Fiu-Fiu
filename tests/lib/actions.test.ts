@@ -16,6 +16,9 @@ const createPromotorMileage = vi.fn();
 const deletePromotorAgendaEntry = vi.fn();
 const createCommercialVisit = vi.fn();
 const updateCommercialVisit = vi.fn();
+const requestApiPasswordRecovery = vi.fn();
+const verifyApiRecoveryCode = vi.fn();
+const resetApiPassword = vi.fn();
 
 vi.mock('next/cache', () => ({
   revalidatePath,
@@ -44,6 +47,9 @@ vi.mock('@/lib/api/promotor', () => ({
   signInPromotor,
   signUpPromotor,
   updatePromotorVisit,
+  requestApiPasswordRecovery,
+  verifyApiRecoveryCode,
+  resetApiPassword,
 }));
 
 vi.mock('@/lib/api/comercial', () => ({
@@ -212,5 +218,78 @@ describe('actions flows', () => {
         isDraft: true,
       })
     );
+  });
+
+  describe('password recovery flows', () => {
+    it('requests recovery code successfully', async () => {
+      requestApiPasswordRecovery.mockResolvedValue(true);
+      const { requestPasswordRecovery } = await import('@/lib/actions');
+      const result = await requestPasswordRecovery('promotor@example.com');
+      expect(result).toEqual({ success: true });
+      expect(requestApiPasswordRecovery).toHaveBeenCalledWith('promotor@example.com');
+    });
+
+    it('returns error when request recovery code validation fails', async () => {
+      const { requestPasswordRecovery } = await import('@/lib/actions');
+      const result = await requestPasswordRecovery('invalid-email');
+      expect(result).toEqual({ success: false, error: 'E-mail invalido.' });
+      expect(requestApiPasswordRecovery).not.toHaveBeenCalled();
+    });
+
+    it('verifies recovery code successfully', async () => {
+      verifyApiRecoveryCode.mockResolvedValue({ valid: true });
+      const { verifyRecoveryCode } = await import('@/lib/actions');
+      const result = await verifyRecoveryCode('promotor@example.com', '123456');
+      expect(result).toEqual({ success: true, error: null });
+      expect(verifyApiRecoveryCode).toHaveBeenCalledWith('promotor@example.com', '123456');
+    });
+
+    it('returns error when verify recovery code is invalid', async () => {
+      verifyApiRecoveryCode.mockResolvedValue({ valid: false });
+      const { verifyRecoveryCode } = await import('@/lib/actions');
+      const result = await verifyRecoveryCode('promotor@example.com', '111111');
+      expect(result).toEqual({ success: false, error: 'Codigo invalido ou expirado.' });
+    });
+
+    it('resets password successfully when valid', async () => {
+      resetApiPassword.mockResolvedValue(true);
+      const { resetPassword } = await import('@/lib/actions');
+      const result = await resetPassword({
+        email: 'promotor@example.com',
+        code: '123456',
+        password: 'NewSecurePass123',
+        confirmPassword: 'NewSecurePass123',
+      });
+      expect(result).toEqual({ success: true });
+      expect(resetApiPassword).toHaveBeenCalledWith({
+        email: 'promotor@example.com',
+        code: '123456',
+        password: 'NewSecurePass123',
+        confirmPassword: 'NewSecurePass123',
+      });
+    });
+
+    it('returns error when reset password is too short (< 8 chars)', async () => {
+      const { resetPassword } = await import('@/lib/actions');
+      const result = await resetPassword({
+        email: 'promotor@example.com',
+        code: '123456',
+        password: 'short',
+        confirmPassword: 'short',
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('A senha deve ter pelo menos 8 caracteres');
+    });
+
+    it('returns error when reset passwords mismatch', async () => {
+      const { resetPassword } = await import('@/lib/actions');
+      const result = await resetPassword({
+        email: 'promotor@example.com',
+        code: '123456',
+        password: 'NewSecurePass123',
+        confirmPassword: 'DifferentPass123',
+      });
+      expect(result).toEqual({ success: false, error: 'As senhas nao coincidem' });
+    });
   });
 });
