@@ -224,7 +224,7 @@ export function WeeklyVehicleCheckGate({
       {children}
 
       {shouldShowGate && (
-        <div className="fixed inset-0 z-[100] flex min-h-screen items-center justify-center bg-[#091c27] px-4 py-8">
+        <div className="fixed inset-0 z-[100] flex min-h-screen items-start justify-center overflow-y-auto bg-[#091c27] px-4 py-8">
           <section className="">
             <div className="">
               <h2 className="mx-auto max-w-[14rem] text-center text-[1.75rem] font-semibold leading-tight">
