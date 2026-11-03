@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation';
 
 import { NewVisitForm } from '@/components/visits/new-visit-form';
 import { getHomePath, getSession } from '@/lib/auth';
+import { getVisitConfirmationFullName } from '@/lib/header-user';
 
 type NewVisitPageProps = {
   searchParams?: Promise<{
@@ -27,6 +28,11 @@ export default async function NewVisitPage({ searchParams }: NewVisitPageProps) 
     redirect('/login');
   }
 
+  const userFullName = await getVisitConfirmationFullName(
+    session.accessToken,
+    session.user.email,
+    session.user.fullName
+  );
   const resolvedSearchParams = searchParams ? await searchParams : {};
   const initialClient =
     resolvedSearchParams.clientId && resolvedSearchParams.clientName
@@ -57,6 +63,7 @@ export default async function NewVisitPage({ searchParams }: NewVisitPageProps) 
       </div>
       <NewVisitForm
         initialClient={initialClient}
+        userFullName={userFullName}
         initialData={{
           establishmentLabel:
             initialClient?.nickname || initialClient?.fantasy_name || initialClient?.client_name || '',

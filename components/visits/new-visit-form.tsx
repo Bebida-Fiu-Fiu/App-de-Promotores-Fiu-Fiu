@@ -18,6 +18,7 @@ import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+import { formatVisitCopyText } from '@/lib/visit-copy';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
 import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
@@ -148,6 +149,7 @@ type VisitImageGalleryState = VisitImageState[];
 type NewVisitFormProps = {
   visitId?: number;
   isDraft?: boolean;
+  userFullName: string | null;
   initialData?: Partial<VisitFormValues> & {
     beforeImages?: string[];
     afterImages?: string[];
@@ -667,6 +669,7 @@ function VisitImageGalleryField({
 export function NewVisitForm({
   visitId,
   isDraft = false,
+  userFullName,
   initialData,
   initialClient = null,
 }: NewVisitFormProps) {
@@ -679,6 +682,7 @@ export function NewVisitForm({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [submitMode, setSubmitMode] = useState<'draft' | 'final' | null>(null);
   const [showSuccessDialog, setShowSuccessDialog] = useState(false);
+  const [visitConfirmationText, setVisitConfirmationText] = useState('');
   const [searchFilters, setSearchFilters] = useState<ClientSearchFilters>({
     clientId: '',
     clientName: '',
@@ -1047,6 +1051,14 @@ export function NewVisitForm({
       }
 
       if (mode === 'final' && nextVisitId) {
+        const confirmationText = formatVisitCopyText({
+          visitDate: values.visitDate,
+          userFullName,
+          establishment: values.establishmentLabel,
+          establishmentId: values.establishmentId,
+          products: values.products.filter((product) => isCompleteProduct(product)),
+        });
+        setVisitConfirmationText(confirmationText);
         setShowSuccessDialog(true);
         return;
       }
@@ -1639,7 +1651,12 @@ export function NewVisitForm({
           )}
         </form>
       </div>
-      <VisitSuccessDialog isOpen={showSuccessDialog} homePath={homePath} />
+      <VisitSuccessDialog
+        isOpen={showSuccessDialog}
+        homePath={homePath}
+        visitText={visitConfirmationText}
+        visitDate={watchedVisitDate}
+      />
     </section>
   );
 }

@@ -3,19 +3,40 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 
+import { CopyVisitButton } from '@/components/visits/copy-visit-button';
+
 type VisitSuccessDialogProps = {
   isOpen: boolean;
   homePath: string;
+  visitText: string;
+  visitDate: string;
   onClose?: () => void;
 };
 
-export function VisitSuccessDialog({ isOpen, homePath, onClose }: VisitSuccessDialogProps) {
+export function VisitSuccessDialog({
+  isOpen,
+  homePath,
+  visitText,
+  visitDate,
+}: VisitSuccessDialogProps) {
   const router = useRouter();
   const [isNavigating, setIsNavigating] = useState(false);
 
   if (!isOpen) {
     return null;
   }
+
+  const handleDownloadVisit = () => {
+    const file = new Blob([visitText], { type: 'text/plain;charset=utf-8' });
+    const downloadUrl = URL.createObjectURL(file);
+    const link = document.createElement('a');
+    const dateForFilename = visitDate.replace(/\//g, '-');
+
+    link.href = downloadUrl;
+    link.download = `visita-${dateForFilename}.txt`;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+  };
 
   const handleNewVisit = () => {
     setIsNavigating(true);
@@ -42,6 +63,15 @@ export function VisitSuccessDialog({ isOpen, homePath, onClose }: VisitSuccessDi
         </div>
 
         <div className="mt-8 space-y-3">
+          <CopyVisitButton visitText={visitText} />
+
+          <button
+            onClick={handleDownloadVisit}
+            className="w-full rounded-xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/20"
+          >
+            Baixar informações (.txt)
+          </button>
+
           <button
             onClick={handleNewVisit}
             disabled={isNavigating}

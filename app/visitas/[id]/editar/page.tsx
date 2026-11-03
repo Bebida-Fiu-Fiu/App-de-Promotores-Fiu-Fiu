@@ -5,6 +5,7 @@ import { notFound, redirect } from 'next/navigation';
 import { NewVisitForm } from '@/components/visits/new-visit-form';
 import { getSession } from '@/lib/auth';
 import { getVisitById } from '@/lib/api/promotor';
+import { getVisitConfirmationFullName } from '@/lib/header-user';
 import type { PromotorVisitProduct } from '@/types/promotor';
 
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
@@ -54,6 +55,11 @@ export default async function EditVisitPage({
     redirect('/login');
   }
 
+  const userFullName = await getVisitConfirmationFullName(
+    session.accessToken,
+    session.user.email,
+    session.user.fullName
+  );
   const { id } = await params;
 
   let visit:
@@ -124,6 +130,7 @@ export default async function EditVisitPage({
       <NewVisitForm
         visitId={Number(id)}
         isDraft={visit.isDraft}
+        userFullName={userFullName}
         initialData={{
           establishmentLabel: visit.establishmentLabel,
           establishmentId: visit.establishmentId,

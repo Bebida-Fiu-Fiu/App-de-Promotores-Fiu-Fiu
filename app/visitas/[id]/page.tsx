@@ -2,18 +2,14 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
+import { CopyVisitButton } from '@/components/visits/copy-visit-button';
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import { VisitImageThumbnailGallery } from '@/components/visits/visit-image-thumbnail-gallery';
 import { getHomePath, getSession } from '@/lib/auth';
 import { getVisitById } from '@/lib/api/promotor';
-import { getHeaderFullName } from '@/lib/header-user';
-
-type VisitProduct = {
-  name: string;
-  quantity: number;
-  unit: string;
-  expirationDate: string;
-};
+import { getVisitConfirmationFullName } from '@/lib/header-user';
+import { formatVisitCopyText } from '@/lib/visit-copy';
+import type { PromotorVisitProduct } from '@/types/promotor';
 
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
   [
@@ -62,15 +58,20 @@ export default async function VisitDetailsPage({
     redirect('/login');
   }
 
-  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
+  const fullName = await getVisitConfirmationFullName(
+    session.accessToken,
+    session.user.email,
+    session.user.fullName
+  );
 
   const { id } = await params;
 
   let visit:
       | {
         establishment: string;
+        establishmentId: number | null;
         visitDate: string;
-        products: VisitProduct[];
+        products: PromotorVisitProduct[];
         beforeImages: string[];
         afterImages: string[];
         observation: string | null;
@@ -85,6 +86,7 @@ export default async function VisitDetailsPage({
     if (currentVisit) {
       visit = {
         establishment: currentVisit.establishment ?? 'Rascunho sem estabelecimento',
+        establishmentId: currentVisit.establishmentId,
         visitDate: formatDatabaseDateToDisplay(currentVisit.visitDate),
         products: currentVisit.products.map((product) => ({
           ...product,
@@ -106,6 +108,14 @@ export default async function VisitDetailsPage({
   if (!visit) {
     notFound();
   }
+
+  const visitCopyText = formatVisitCopyText({
+    visitDate: visit.visitDate,
+    userFullName: fullName,
+    establishment: visit.establishment,
+    establishmentId: visit.establishmentId,
+    products: visit.products,
+  });
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(0,156,108,0.12),_transparent_32%),linear-gradient(180deg,_#0f2d3d_0%,_var(--background)_42%,_#091c27_100%)] px-4 py-10 pb-28">
@@ -132,6 +142,10 @@ export default async function VisitDetailsPage({
             </div>
 
             <div className="flex flex-wrap gap-2 lg:max-w-[360px] lg:justify-end">
+              <CopyVisitButton
+                visitText={visitCopyText}
+                className="inline-flex h-11 items-center justify-center rounded-xl border border-white/15 bg-white/[0.04] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.1]"
+              />
               {visit.canEdit && (
                 <Link
                   href={`/visitas/${id}/editar`}
