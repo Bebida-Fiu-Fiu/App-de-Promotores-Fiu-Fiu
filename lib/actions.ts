@@ -3,12 +3,20 @@
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { pool } from '@/lib/db';
-import { clearSession, createSession, getAppEntryPath, getHomePath, getSession } from '@/lib/auth';
+import {
+  clearSession,
+  createSession,
+  getAppEntryPath,
+  getHomePath,
+  getPromotorOpaqueIdFromSession,
+  getSession,
+} from '@/lib/auth';
 import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
 import { ApiError } from '@/lib/api/client';
 import {
   createPromotorMileage,
   createPromotorAgendaEntry,
+  listPromotorAgendaByPromotorId,
   deleteDraftVisit,
   deletePromotorAgendaEntry,
   createPromotorVisit,
@@ -21,6 +29,7 @@ import {
   resetApiPassword,
 } from '@/lib/api/promotor';
 import { createCommercialVisit, updateCommercialVisit } from '@/lib/api/comercial';
+import type { AttendedStore } from '@/types/promotor';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -252,6 +261,64 @@ function normalizeTextSearch(value: string) {
     .toLowerCase();
 }
 
+function matchesAttendedStoreFilter(value: string | null | undefined, query: string) {
+  return normalizeTextSearch(value ?? '').includes(normalizeTextSearch(query.trim()));
+}
+
+function matchesAnyAttendedStoreFilter(values: Array<string | null | undefined>, query: string) {
+  return !query.trim() || values.some((value) => matchesAttendedStoreFilter(value, query));
+}
+
+function filterAttendedStoresForVisit(
+  stores: AttendedStore[],
+  filters: z.infer<typeof clientSearchSchema>
+) {
+  const normalizedDocument = normalizeDigits(filters.document);
+
+  return stores
+    .filter((store) =>
+      [
+        matchesAnyAttendedStoreFilter(
+          store.clientId === null ? [] : [String(store.clientId)],
+          filters.clientId
+        ),
+        matchesAnyAttendedStoreFilter(
+          [store.nickname, store.clientName, store.fantasyName],
+          filters.clientName
+        ),
+        matchesAnyAttendedStoreFilter(
+          [store.clientName, store.fantasyName, store.nickname],
+          filters.fantasyName
+        ),
+        matchesAttendedStoreFilter(normalizeDigits(store.document), normalizedDocument),
+        matchesAttendedStoreFilter(store.city, filters.city),
+        matchesAttendedStoreFilter(store.address, filters.address),
+        matchesAttendedStoreFilter(store.addressNumber, filters.addressNumber),
+        matchesAttendedStoreFilter(store.neighborhood, filters.neighborhood),
+        matchesAttendedStoreFilter(store.state, filters.state),
+      ].every(Boolean)
+    )
+    .slice(0, 30)
+    .flatMap((store) =>
+      store.clientId === null
+        ? []
+        : [
+            {
+              id: store.clientId,
+              nickname: store.nickname,
+              client_name: store.clientName,
+              fantasy_name: store.fantasyName,
+              document: store.document,
+              city: store.city,
+              address: store.address,
+              address_number: store.addressNumber,
+              neighborhood: store.neighborhood,
+              state: store.state,
+            },
+          ]
+    );
+}
+
 function decodeJwtPayload(token: string) {
   const parts = token.split('.');
 
@@ -449,100 +516,26 @@ export async function searchClients(
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
   if (scope === 'agenda') {
-    const promotorId = await getCurrentPromotorId();
+    const session = await getSession();
+    const promotorId = getPromotorOpaqueIdFromSession(session);
 
-    if (!promotorId) {
+    if (!session || promotorId === null) {
       return { success: false, error: 'Sessao expirada. Faca login novamente.', clients: [] };
     }
 
-    const agendaConditions: string[] = [];
-    const agendaValues: Array<string | number> = [promotorId];
-    const textNormalizationSql = "translate(lower($VALUE), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')";
-
-    const addAgendaCondition = (sql: string, value: string) => {
-      const trimmedValue = value.trim();
-
-      if (!trimmedValue) {
-        return;
-      }
-
-      agendaValues.push(`%${normalizeTextSearch(trimmedValue)}%`);
-      agendaConditions.push(sql.replaceAll('$VALUE', `$${agendaValues.length}`));
-    };
-
-    addAgendaCondition(
-      `(
-        translate(lower(c.client_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
-        OR translate(lower(c.fantasy_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
-        OR translate(lower(coalesce(a.nickname, '')), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
-      )`,
-      clientName
-    );
-    addAgendaCondition('c.id::text ILIKE $VALUE', clientId);
-    addAgendaCondition(
-      `(
-        translate(lower(c.fantasy_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
-        OR translate(lower(coalesce(a.nickname, '')), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
-      )`,
-      fantasyName
-    );
-    addAgendaCondition(
-      `translate(lower(c.city), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
-      city
-    );
-    addAgendaCondition(
-      `translate(lower(c.address), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
-      address
-    );
-    addAgendaCondition('c.address_number ILIKE $VALUE', addressNumber);
-    addAgendaCondition(
-      `translate(lower(c.neighborhood), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
-      neighborhood
-    );
-    addAgendaCondition(
-      `translate(lower(c.state), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}`,
-      state
-    );
-
-    if (normalizedDocument) {
-      agendaValues.push(`%${normalizedDocument}%`);
-      agendaConditions.push(
-        `regexp_replace(c.document, '[^0-9]', '', 'g') ILIKE $${agendaValues.length}`
-      );
-    }
-
     try {
-      const client = await pool.connect();
-
-      try {
-        const result = await client.query(
-          `SELECT DISTINCT
-             c.id,
-             a.nickname,
-             c.client_name,
-             c.fantasy_name,
-             c.document,
-             c.city,
-             c.address,
-             c.address_number,
-             c.neighborhood,
-             c.state
-           FROM promotor_client_agenda a
-           INNER JOIN clients c ON c.id = a.client_id
-           WHERE a.promotor_id = $1
-           ${agendaConditions.length > 0 ? `AND ${agendaConditions.join(' AND ')}` : ''}
-           ORDER BY c.fantasy_name ASC, c.client_name ASC
-           LIMIT 30`,
-          agendaValues
-        );
-
-        return { success: true, clients: result.rows };
-      } finally {
-        client.release();
-      }
+      const stores = await listPromotorAgendaByPromotorId(session.accessToken, promotorId);
+      return {
+        success: true,
+        clients: filterAttendedStoresForVisit(stores, validation.data),
+      };
     } catch (error) {
-      console.error('Search agenda clients error:', error);
-      return { success: false, error: 'Nao foi possivel buscar os clientes da agenda.', clients: [] };
+      console.error('Search attended stores by promoter error:', error);
+      return {
+        success: false,
+        error: 'Nao foi possivel buscar as lojas atendidas do promotor. Tente novamente.',
+        clients: [],
+      };
     }
   }
 

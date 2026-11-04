@@ -884,7 +884,7 @@ export function NewVisitForm({
       if (result.clients.length === 0) {
         setSearchError(
           clientSearchMode === 'agenda'
-            ? 'Nenhum cliente encontrado na agenda com esses filtros.'
+            ? 'Nenhuma loja atendida com cliente vinculado encontrada. Lojas sem cliente vinculado ainda nao podem ser usadas para registrar uma visita.'
             : 'Nenhum estabelecimento encontrado na busca geral com esses filtros.'
         );
       }
