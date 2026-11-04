@@ -11,6 +11,7 @@ const signUpPromotor = vi.fn();
 const getPromotorMe = vi.fn();
 const createPromotorVisit = vi.fn();
 const createPromotorAgendaEntry = vi.fn();
+const listPromotorAgendaByPromotorId = vi.fn();
 const updatePromotorVisit = vi.fn();
 const deleteDraftVisit = vi.fn();
 const createPromotorMileage = vi.fn();
@@ -30,6 +31,9 @@ vi.mock('@/lib/auth', () => ({
   createSession,
   getAppEntryPath: vi.fn((role: string) => (role === 'comercial' ? '/comercial' : '/checkin')),
   getHomePath: vi.fn((role: string) => (role === 'comercial' ? '/comercial' : '/promotor')),
+  getPromotorOpaqueIdFromSession: vi.fn(
+    (session: { user: { id: string | number | null } } | null) => session?.user.id ?? null
+  ),
   getSession,
 }));
 
@@ -42,6 +46,7 @@ vi.mock('@/lib/db', () => ({
 vi.mock('@/lib/api/promotor', () => ({
   createPromotorMileage,
   createPromotorAgendaEntry,
+  listPromotorAgendaByPromotorId,
   createPromotorVisit,
   deleteDraftVisit,
   deletePromotorAgendaEntry,
@@ -62,6 +67,84 @@ vi.mock('@/lib/api/comercial', () => ({
 describe('actions flows', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it('searches attended stores from the promoter agenda API and matches nickname without changing IDs', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: '00017',
+        email: 'promotor@fiu-fiu.com',
+        fullName: 'Promotor Teste',
+        role: 'promotor',
+      },
+    });
+    listPromotorAgendaByPromotorId.mockResolvedValue([
+      {
+        id: '0009',
+        clientId: '00042',
+        promotorId: '00017',
+        promotorName: 'Promotor Teste',
+        promotorEmail: null,
+        clientName: 'Mercado Central',
+        fantasyName: 'Central',
+        city: 'Sao Paulo',
+        state: 'SP',
+        nickname: 'Loja São Paulo',
+        notes: null,
+        document: '12.345.678/0001-90',
+        address: 'Rua Um',
+        addressNumber: null,
+        neighborhood: 'Centro',
+        daysBetweenVisits: 7,
+        lastVisitDate: null,
+        createdAt: null,
+        updatedAt: null,
+      },
+      {
+        id: '0010',
+        clientId: null,
+        promotorId: '00017',
+        promotorName: 'Promotor Teste',
+        promotorEmail: null,
+        clientName: '',
+        fantasyName: '',
+        city: '',
+        state: '',
+        nickname: 'Loja sem cliente',
+        notes: null,
+        document: '',
+        address: '',
+        addressNumber: null,
+        neighborhood: '',
+        daysBetweenVisits: 7,
+        lastVisitDate: null,
+        createdAt: null,
+        updatedAt: null,
+      },
+    ]);
+
+    const { searchClients } = await import('@/lib/actions');
+    const result = await searchClients({ clientName: 'sao paulo' }, 'agenda');
+
+    expect(listPromotorAgendaByPromotorId).toHaveBeenCalledWith('session-token', '00017');
+    expect(result).toEqual({
+      success: true,
+      clients: [
+        {
+          id: '00042',
+          nickname: 'Loja São Paulo',
+          client_name: 'Mercado Central',
+          fantasy_name: 'Central',
+          document: '12.345.678/0001-90',
+          city: 'Sao Paulo',
+          address: 'Rua Um',
+          address_number: null,
+          neighborhood: 'Centro',
+          state: 'SP',
+        },
+      ],
+    });
   });
 
   it('stores the exact token returned by login and replaces the session cookies', async () => {
