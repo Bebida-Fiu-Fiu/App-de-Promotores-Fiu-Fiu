@@ -10,6 +10,7 @@ const signInPromotor = vi.fn();
 const signUpPromotor = vi.fn();
 const getPromotorMe = vi.fn();
 const createPromotorVisit = vi.fn();
+const createPromotorAgendaEntry = vi.fn();
 const updatePromotorVisit = vi.fn();
 const deleteDraftVisit = vi.fn();
 const createPromotorMileage = vi.fn();
@@ -40,6 +41,7 @@ vi.mock('@/lib/db', () => ({
 
 vi.mock('@/lib/api/promotor', () => ({
   createPromotorMileage,
+  createPromotorAgendaEntry,
   createPromotorVisit,
   deleteDraftVisit,
   deletePromotorAgendaEntry,
@@ -111,6 +113,7 @@ describe('actions flows', () => {
         role: 'promotor',
       },
     });
+
     createPromotorVisit.mockResolvedValue({ id: 55 });
 
     const { createVisit } = await import('@/lib/actions');
@@ -145,6 +148,203 @@ describe('actions flows', () => {
       })
     );
     expect(revalidatePath).toHaveBeenCalledWith('/visitas/nova');
+  });
+
+  it('creates a store agenda with the selected promoter and custom frequency', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 20,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 14,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 14,
+    });
+    expect(revalidatePath).toHaveBeenCalledWith('/agenda');
+  });
+
+  it('uses the seven-day default when creating an agenda without a custom interval', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 20,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 7,
+    });
+  });
+
+  it('creates an attended store using only its required nickname', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 20,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({ nickname: 'Loja sem vinculos' });
+
+    expect(result).toEqual({ success: true });
+    expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
+      nickname: 'Loja sem vinculos',
+      daysBetweenVisits: 7,
+    });
+  });
+
+  it('allows linking a client without assigning a promoter', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 20,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({
+      clientId: '00042',
+      nickname: 'Loja sem promotor',
+      daysBetweenVisits: 14,
+    });
+
+    expect(result).toEqual({ success: true });
+    expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
+      clientId: '00042',
+      nickname: 'Loja sem promotor',
+      daysBetweenVisits: 14,
+    });
+  });
+
+  it('explains that a 409 client conflict means the client is already linked', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 21,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+    createPromotorAgendaEntry.mockRejectedValue(new ApiError('Already assigned', 409));
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 7,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining('cliente escolhido ja esta vinculado a outra loja atendida'),
+    });
+  });
+
+  it('rejects an empty nickname before calling the API', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 22,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({ nickname: '   ' });
+
+    expect(result.success).toBe(false);
+    expect(createPromotorAgendaEntry).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-positive or fractional agenda frequency before the API request', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 22,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+
+    const { createAgendaEntry } = await import('@/lib/actions');
+    const result = await createAgendaEntry({
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 2.5,
+    });
+
+    expect(result.success).toBe(false);
+    expect(createPromotorAgendaEntry).not.toHaveBeenCalled();
+  });
+
+  it('shows a clear message when the API rejects the request with 400 or 500', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: 22,
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+    const { createAgendaEntry } = await import('@/lib/actions');
+
+    createPromotorAgendaEntry.mockRejectedValueOnce(new ApiError('Bad request', 400));
+    const badRequestResult = await createAgendaEntry({ nickname: 'Loja teste' });
+    expect(badRequestResult).toMatchObject({
+      success: false,
+      error: expect.stringContaining('API rejeitou os dados'),
+    });
+
+    createPromotorAgendaEntry.mockRejectedValueOnce(new ApiError('Server error', 500));
+    const serverErrorResult = await createAgendaEntry({ nickname: 'Loja teste' });
+    expect(serverErrorResult).toMatchObject({
+      success: false,
+      error: expect.stringContaining('servico de lojas atendidas esta indisponivel'),
+    });
   });
 
   it('clears the session and requests login again when visit creation returns 401', async () => {

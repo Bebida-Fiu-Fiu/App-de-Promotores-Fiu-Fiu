@@ -9,7 +9,7 @@ import { getHomePath, getSession } from '@/lib/auth';
 import { getVisitById } from '@/lib/api/promotor';
 import { getVisitConfirmationFullName } from '@/lib/header-user';
 import { formatVisitCopyText } from '@/lib/visit-copy';
-import type { PromotorVisitProduct } from '@/types/promotor';
+import type { OpaqueId, PromotorVisitProduct } from '@/types/promotor';
 
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
   [
@@ -69,7 +69,7 @@ export default async function VisitDetailsPage({
   let visit:
       | {
         establishment: string;
-        establishmentId: number | null;
+        establishmentId: OpaqueId | null;
         visitDate: string;
         products: PromotorVisitProduct[];
         beforeImages: string[];

@@ -23,7 +23,7 @@ import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
 import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
 import { isAcceptedImageFile, mapFilesToUploadPayload, optimizeVisitImageFile } from '@/lib/file-utils';
-import type { PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
+import type { OpaqueId, PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
   'Cajazinha',
@@ -98,9 +98,12 @@ const visitFormSchema = z.object({
       return null;
     }
 
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : value;
-  }, z.number().int().positive().nullable()),
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    return value;
+  }, z.union([z.number().int().nonnegative(), z.string().min(1)]).nullable()),
   establishmentLabel: z.string().trim(),
   visitDate: z.string(),
   observation: z.string().trim().max(1000, 'A observacao deve ter no maximo 1000 caracteres.'),
@@ -123,7 +126,7 @@ type ClientSearchFilters = {
 };
 
 type ClientSearchResult = {
-  id: number;
+  id: OpaqueId;
   nickname?: string;
   client_name: string;
   fantasy_name: string;
@@ -355,7 +358,7 @@ type SignedUploadResponse = {
 };
 
 function buildVisitSubmitFormData(params: {
-  establishment: number | null;
+  establishment: OpaqueId | null;
   visitDate: string | null;
   products: PromotorVisitProduct[];
   observation: string | null;

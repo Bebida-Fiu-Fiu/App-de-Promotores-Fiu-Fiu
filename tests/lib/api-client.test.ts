@@ -50,4 +50,41 @@ describe('api client', () => {
       status: 401,
     }));
   });
+
+  it('includes the API request ID on errors and never logs credentials or payloads', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ message: 'Internal Server Error', accessToken: 'response-secret' }),
+        {
+          status: 500,
+          headers: {
+            'content-type': 'application/json',
+            'apigw-requestid': 'request-123',
+          },
+        }
+      )
+    );
+
+    try {
+      await expect(
+        apiRequestWithMeta('/promotors/agendas', {
+          token: 'request-secret',
+          method: 'POST',
+          body: { password: 'password-secret' },
+        })
+      ).rejects.toMatchObject({
+        status: 500,
+        requestId: 'request-123',
+      });
+
+      const loggedOutput = JSON.stringify(logSpy.mock.calls);
+      expect(loggedOutput).not.toContain('request-secret');
+      expect(loggedOutput).not.toContain('password-secret');
+      expect(loggedOutput).not.toContain('response-secret');
+      expect(loggedOutput).toContain('request-123');
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
 });

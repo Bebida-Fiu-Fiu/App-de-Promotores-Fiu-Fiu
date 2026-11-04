@@ -4,9 +4,10 @@ import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 
 import { removeAgendaEntry } from '@/lib/actions';
+import type { OpaqueId } from '@/types/promotor';
 
 type DeleteAgendaEntryButtonProps = {
-  agendaEntryId: number;
+  agendaEntryId: OpaqueId;
 };
 
 export function DeleteAgendaEntryButton({ agendaEntryId }: DeleteAgendaEntryButtonProps) {
@@ -20,7 +21,7 @@ export function DeleteAgendaEntryButton({ agendaEntryId }: DeleteAgendaEntryButt
         type="button"
         disabled={isPending}
         onClick={() => {
-          const shouldDelete = window.confirm('Deseja excluir este cliente da agenda?');
+          const shouldDelete = window.confirm('Deseja excluir esta loja atendida?');
 
           if (!shouldDelete) {
             return;
@@ -32,7 +33,7 @@ export function DeleteAgendaEntryButton({ agendaEntryId }: DeleteAgendaEntryButt
             const result = await removeAgendaEntry(agendaEntryId);
 
             if (!result.success) {
-              setError(result.error ?? 'Nao foi possivel excluir o cliente da agenda.');
+              setError(result.error ?? 'Nao foi possivel excluir a loja atendida.');
               return;
             }
 

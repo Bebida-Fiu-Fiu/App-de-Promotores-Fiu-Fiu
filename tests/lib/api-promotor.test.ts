@@ -1,6 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createPromotorVisit, getVisitById, signInPromotor, updatePromotorVisit } from '@/lib/api/promotor';
+import {
+  createPromotorAgendaEntry,
+  createPromotorVisit,
+  getVisitById,
+  listAllVisitsReportByPromotorId,
+  listAllPromotorAgendas,
+  listPromotorAgendaByPromotorId,
+  signInPromotor,
+  updatePromotorVisit,
+} from '@/lib/api/promotor';
 
 describe('promotor api', () => {
   beforeEach(() => {
@@ -32,6 +41,170 @@ describe('promotor api', () => {
     });
 
     expect(result.accessToken).toBe('access-token-from-api');
+  });
+
+  it('normalizes agenda visit frequency and defaults missing intervals to seven days', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          agendas: [
+            { id: '0001', clientId: '00042', promotorId: '0017', daysBetweenVisits: 14, lastVisitDate: '2026-06-01' },
+            { id: 2, clientId: 43, days_between_visits: 5, created_at: '2026-05-01' },
+            { id: 3, clientId: 44, daysBetweenVisits: 0 },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }
+      )
+    );
+
+    const agenda = await listPromotorAgendaByPromotorId('token-123', 17);
+
+    expect(agenda.map((entry) => entry.daysBetweenVisits)).toEqual([14, 5, 7]);
+    expect(agenda[0]?.lastVisitDate).toBe('2026-06-01');
+    expect(agenda[1]?.createdAt).toBe('2026-05-01');
+    expect(agenda[0]).toMatchObject({
+      id: '0001',
+      clientId: '00042',
+      promotorId: '0017',
+    });
+  });
+
+  it('lists every store agenda and keeps opaque IDs unchanged', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          agendas: [
+            { id: '0009', clientId: '00042', promotorId: '0017', promotorName: 'Joao' },
+            { id: '0010', nickname: 'Loja sem vinculos' },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    );
+
+    const agendas = await listAllPromotorAgendas('token-123');
+    expect(agendas[0]).toMatchObject({
+      id: '0009',
+      clientId: '00042',
+      promotorId: '0017',
+      promotorName: 'Joao',
+    });
+    expect(agendas[1]).toMatchObject({
+      id: '0010',
+      nickname: 'Loja sem vinculos',
+      clientId: null,
+      promotorId: null,
+      daysBetweenVisits: 7,
+    });
+    expect(String(vi.mocked(fetch).mock.calls[0]?.[0])).toBe(
+      'https://api.example.com/promotors/agendas'
+    );
+  });
+
+  it('posts the selected IDs and custom visit interval without coercing IDs', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ id: '0009' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await createPromotorAgendaEntry('token-123', {
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 14,
+    });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      clientId: '00042',
+      promotorId: '0017',
+      nickname: 'Loja Centro',
+      daysBetweenVisits: 14,
+    });
+  });
+
+  it('posts only the required nickname when a store has no optional links', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ id: '0010' }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await createPromotorAgendaEntry('token-123', {
+      nickname: 'Loja sem vinculos',
+      daysBetweenVisits: 7,
+    });
+
+    const [, init] = vi.mocked(fetch).mock.calls[0];
+    expect(JSON.parse(String(init?.body))).toEqual({
+      nickname: 'Loja sem vinculos',
+      daysBetweenVisits: 7,
+    });
+  });
+
+  it('preserves a 409 conflict from creating a store agenda', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ message: 'Already assigned' }), {
+        status: 409,
+        headers: { 'content-type': 'application/json' },
+      })
+    );
+
+    await expect(
+      createPromotorAgendaEntry('token-123', {
+        clientId: '00042',
+        promotorId: '0017',
+        nickname: 'Loja Centro',
+        daysBetweenVisits: 7,
+      })
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('loads all visits from the report endpoint used by the visits screen', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            visits: [
+              {
+                id: 1,
+                establishment: 'teste',
+                establishmentId: null,
+                promotorId: null,
+                visitDate: '2026-11-01',
+              },
+            ],
+            hasNextPage: true,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ visits: [], hasNextPage: false }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      );
+
+    const visits = await listAllVisitsReportByPromotorId('token-123', '0017');
+
+    expect(visits).toHaveLength(1);
+    expect(visits[0]).toMatchObject({
+      establishment: 'teste',
+      establishmentId: null,
+      promotorId: null,
+      visitDate: '2026-11-01',
+    });
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => String(url))).toEqual([
+      'https://api.example.com/visits/report?promotorId=0017&page=1&limit=100',
+      'https://api.example.com/visits/report?promotorId=0017&page=2&limit=100',
+    ]);
   });
 
   it('builds the visit payload with establishmentId and forwards the token', async () => {

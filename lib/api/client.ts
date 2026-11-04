@@ -1,5 +1,4 @@
 import 'server-only';
-import { inspect } from 'node:util';
 
 type PrimitiveRecord = Record<string, unknown>;
 
@@ -8,11 +7,14 @@ export class ApiError extends Error {
 
   details: unknown;
 
-  constructor(message: string, status: number, details?: unknown) {
+  requestId: string | null;
+
+  constructor(message: string, status: number, details?: unknown, requestId: string | null = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
     this.details = details;
+    this.requestId = requestId;
   }
 }
 
@@ -94,15 +96,6 @@ function extractErrorMessage(payload: unknown, fallbackMessage: string) {
     : fallbackMessage;
 }
 
-function formatLogValue(value: unknown) {
-  return inspect(value, {
-    depth: null,
-    colors: false,
-    compact: false,
-    breakLength: 120,
-  });
-}
-
 type ApiRequestOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   token?: string;
@@ -159,8 +152,7 @@ export async function apiRequestWithMeta<T>(path: string, options: ApiRequestOpt
   console.log('[FIU-FIU API REQUEST]', {
     method: options.method ?? 'GET',
     url,
-    headers: Object.fromEntries(headers.entries()),
-    body: isFormDataBody ? '[FormData]' : formatLogValue(options.body ?? null),
+    hasBody: options.body !== undefined,
   });
 
   const response = await fetch(url, {
@@ -178,15 +170,17 @@ export async function apiRequestWithMeta<T>(path: string, options: ApiRequestOpt
     url,
     status: response.status,
     ok: response.ok,
-    headers: Object.fromEntries(response.headers.entries()),
-    body: formatLogValue(payload),
+    requestId:
+      response.headers.get('apigw-requestid') ??
+      response.headers.get('x-request-id'),
   });
 
   if (!response.ok) {
     throw new ApiError(
       extractErrorMessage(payload, 'Nao foi possivel concluir a requisicao para a API externa.'),
       response.status,
-      payload
+      payload,
+      response.headers.get('apigw-requestid') ?? response.headers.get('x-request-id')
     );
   }
 

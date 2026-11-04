@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { SessionUser } from '@/types/auth';
 import type {
-  PromotorAgendaEntry,
+  AttendedStore,
   PromotorMileageRecord,
   PromotorProfile,
   PromotorVisitListPage,
@@ -11,6 +11,7 @@ import type {
   PromotorVisitPayload,
   PromotorVisitProduct,
 } from '@/types/promotor';
+import type { OpaqueId } from '@/types/auth';
 import { apiRequest, apiRequestWithMeta, isRecord, readArrayPayload } from '@/lib/api/client';
 
 type PromotorAuthPayload = {
@@ -31,8 +32,25 @@ function toNumber(value: unknown, fallback = 0) {
 }
 
 function toNullableNumber(value: unknown) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function toOpaqueId(value: unknown): OpaqueId | null {
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function toPositiveInteger(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function toStringValue(value: unknown, fallback = '') {
@@ -211,7 +229,7 @@ function normalizeUser(payload: unknown): SessionUser {
   const record = readNestedRecord(source, ['user', 'data']) ?? {};
 
   return {
-    id: toNullableNumber(record.id ?? record.promotorId ?? record.userId),
+    id: toOpaqueId(record.id ?? record.promotorId ?? record.userId),
     email: toStringValue(record.email),
     fullName: toNullableString(record.fullName ?? record.full_name ?? record.name),
     role: record.role === 'comercial' ? 'comercial' : 'promotor',
@@ -433,8 +451,17 @@ function normalizeImageUrlArray(value: unknown) {
 
 function normalizeVisit(payload: unknown): PromotorVisit {
   const record = isRecord(payload) ? payload : {};
-  const establishmentId = toNullableNumber(
-    record.establishmentId ?? record.establishment_id ?? record.clientId ?? record.client_id ?? record.establishment
+  const establishmentValue =
+    record.establishmentId ??
+    record.establishment_id ??
+    record.clientId ??
+    record.client_id ??
+    (typeof record.establishment === 'number' ||
+    (typeof record.establishment === 'string' && /^\d+$/.test(record.establishment))
+      ? record.establishment
+      : null);
+  const establishmentId = toOpaqueId(
+    establishmentValue
   );
   const rawEstablishment =
     record.establishmentName ??
@@ -449,13 +476,13 @@ function normalizeVisit(payload: unknown): PromotorVisit {
 
   return {
     id: toNumber(record.id),
-    promotorId: toNullableNumber(record.promotorId ?? record.promotor_id),
+    promotorId: toOpaqueId(record.promotorId ?? record.promotor_id),
     establishmentId,
     establishment:
       typeof rawEstablishment === 'number'
         ? String(rawEstablishment)
         : toStringValue(rawEstablishment, 'Rascunho sem estabelecimento'),
-    visitDate: toNullableString(record.visitDate ?? record.visit_date ?? record.date),
+    visitDate: normalizeDateKey(record.visitDate ?? record.visit_date ?? record.date),
     products: Array.isArray(record.products) ? record.products.map(normalizeVisitProduct) : [],
     beforeImages,
     afterImages,
@@ -574,26 +601,27 @@ function normalizeMileageRecord(payload: unknown): PromotorMileageRecord {
   };
 }
 
-function normalizeAgendaEntry(payload: unknown): PromotorAgendaEntry {
+function normalizeAgendaEntry(payload: unknown): AttendedStore {
   const record = isRecord(payload) ? payload : {};
 
   return {
-    id: toNumber(record.id),
-    promotorId: toNullableNumber(record.promotorId ?? record.promotor_id),
+    id: toOpaqueId(record.id),
+    promotorId: toOpaqueId(record.promotorId ?? record.promotor_id),
     promotorName: toNullableString(record.promotorName ?? record.promotor_name),
     promotorEmail: toNullableString(record.promotorEmail ?? record.promotor_email),
-    clientId: toNumber(record.clientId ?? record.client_id),
+    clientId: toOpaqueId(record.clientId ?? record.client_id),
     clientName: toStringValue(record.clientName ?? record.client_name),
     fantasyName: toStringValue(record.fantasyName ?? record.fantasy_name),
     city: toStringValue(record.city),
     state: toStringValue(record.state),
-    nickname: toNullableString(record.nickname),
+    nickname: toStringValue(record.nickname),
     notes: toNullableString(record.notes),
     document: toStringValue(record.document),
     address: toStringValue(record.address),
     addressNumber: toNullableString(record.addressNumber ?? record.address_number),
     neighborhood: toStringValue(record.neighborhood),
-    lastVisitDate: toNullableString(record.lastVisitDate ?? record.last_visit_date),
+    daysBetweenVisits: toPositiveInteger(record.daysBetweenVisits ?? record.days_between_visits, 7),
+    lastVisitDate: normalizeDateKey(record.lastVisitDate ?? record.last_visit_date),
     createdAt: toNullableString(record.createdAt ?? record.created_at),
     updatedAt: toNullableString(record.updatedAt ?? record.updated_at),
   };
@@ -634,8 +662,8 @@ export async function getPromotorMe(token: string): Promise<PromotorProfile> {
   return normalizeUser(response);
 }
 
-export async function listPromotorVisitsByPromotorId(token: string, promotorId: number) {
-  const response = await apiRequest(`/promotor/visit/${promotorId}`, {
+export async function listPromotorVisitsByPromotorId(token: string, promotorId: OpaqueId) {
+  const response = await apiRequest(`/promotor/visit/${encodeURIComponent(String(promotorId))}`, {
     token,
   });
 
@@ -657,7 +685,7 @@ export async function getVisitById(token: string, visitId: number) {
 
 export async function listVisitsReportByPromotorId(
   token: string,
-  promotorId: number,
+  promotorId: OpaqueId,
   options?: {
     page?: number;
     pageSize?: number;
@@ -677,6 +705,22 @@ export async function listVisitsReportByPromotorId(
   return normalizeVisitReportPage(response, page, pageSize);
 }
 
+export async function listAllVisitsReportByPromotorId(token: string, promotorId: OpaqueId) {
+  const pageSize = 100;
+  const visits: PromotorVisit[] = [];
+  let page = 1;
+  let hasNextPage = true;
+
+  while (hasNextPage) {
+    const result = await listVisitsReportByPromotorId(token, promotorId, { page, pageSize });
+    visits.push(...result.items);
+    hasNextPage = result.hasNextPage && result.items.length > 0;
+    page += 1;
+  }
+
+  return visits;
+}
+
 export async function listAllPromotorVisits(token: string) {
   const response = await apiRequest('/promotor/visits', {
     token,
@@ -685,16 +729,40 @@ export async function listAllPromotorVisits(token: string) {
   return readArrayPayload(response, ['visits', 'data', 'items']).map(normalizeVisit);
 }
 
-export async function listPromotorAgendaByPromotorId(token: string, promotorId: number) {
-  const response = await apiRequest(`/promotors/agenda/${promotorId}`, {
+export async function listPromotorAgendaByPromotorId(token: string, promotorId: OpaqueId) {
+  const response = await apiRequest(`/promotors/agenda/${encodeURIComponent(String(promotorId))}`, {
     token,
   });
 
   return readArrayPayload(response, ['agendas', 'agenda', 'data', 'items']).map(normalizeAgendaEntry);
 }
 
-export async function deletePromotorAgendaEntry(token: string, agendaEntryId: number) {
-  await apiRequest(`/promotor/agenda/${agendaEntryId}`, {
+export async function listAllPromotorAgendas(token: string) {
+  const response = await apiRequest('/promotors/agendas', {
+    token,
+  });
+
+  return readArrayPayload(response, ['agendas', 'agenda', 'data', 'items']).map(normalizeAgendaEntry);
+}
+
+export async function createPromotorAgendaEntry(
+  token: string,
+  payload: {
+    clientId?: OpaqueId;
+    promotorId?: OpaqueId;
+    nickname: string;
+    daysBetweenVisits: number;
+  }
+) {
+  return apiRequest('/promotor/agenda', {
+    method: 'POST',
+    token,
+    body: payload,
+  });
+}
+
+export async function deletePromotorAgendaEntry(token: string, agendaEntryId: OpaqueId) {
+  await apiRequest(`/promotor/agenda/${encodeURIComponent(String(agendaEntryId))}`, {
     method: 'DELETE',
     token,
   });

@@ -81,6 +81,30 @@ export function getPromotorIdFromSession(session: SessionData | null | undefined
   return Number.isFinite(tokenSubject) && tokenSubject > 0 ? tokenSubject : null;
 }
 
+export function getPromotorOpaqueIdFromSession(session: SessionData | null | undefined) {
+  if (!session) {
+    return null;
+  }
+
+  const sessionId = session.user.id;
+  if (
+    (typeof sessionId === 'number' && Number.isFinite(sessionId) && sessionId >= 0) ||
+    (typeof sessionId === 'string' && sessionId.length > 0)
+  ) {
+    return sessionId;
+  }
+
+  const tokenSubject = decodeJwtPayload(session.accessToken)?.sub;
+  if (
+    (typeof tokenSubject === 'number' && Number.isFinite(tokenSubject) && tokenSubject >= 0) ||
+    (typeof tokenSubject === 'string' && tokenSubject.length > 0)
+  ) {
+    return tokenSubject;
+  }
+
+  return null;
+}
+
 export async function getSession() {
   const cookieStore = await cookies();
   const accessToken = normalizeStoredAccessToken(
@@ -107,7 +131,10 @@ export async function getSession() {
     return {
       accessToken,
       user: {
-        id: typeof parsedUser.id === 'number' ? parsedUser.id : null,
+        id:
+          typeof parsedUser.id === 'number' || typeof parsedUser.id === 'string'
+            ? parsedUser.id
+            : null,
         email: parsedUser.email,
         fullName: typeof parsedUser.fullName === 'string' ? parsedUser.fullName : null,
         role: isUserRole(parsedUser.role) ? parsedUser.role : isUserRole(roleValue) ? roleValue : 'promotor',

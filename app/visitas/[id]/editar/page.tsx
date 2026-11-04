@@ -6,7 +6,7 @@ import { NewVisitForm } from '@/components/visits/new-visit-form';
 import { getSession } from '@/lib/auth';
 import { getVisitById } from '@/lib/api/promotor';
 import { getVisitConfirmationFullName } from '@/lib/header-user';
-import type { PromotorVisitProduct } from '@/types/promotor';
+import type { OpaqueId, PromotorVisitProduct } from '@/types/promotor';
 
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
   [
@@ -65,7 +65,7 @@ export default async function EditVisitPage({
   let visit:
       | {
         establishmentLabel: string;
-        establishmentId: number | null;
+        establishmentId: OpaqueId | null;
         visitDate: string;
         observation: string;
         products: PromotorVisitProduct[];
