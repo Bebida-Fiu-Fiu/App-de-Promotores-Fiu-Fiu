@@ -8,6 +8,7 @@ import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
 import { ApiError } from '@/lib/api/client';
 import {
   createPromotorMileage,
+  createPromotorAgendaEntry,
   deleteDraftVisit,
   deletePromotorAgendaEntry,
   createPromotorVisit,
@@ -138,7 +139,7 @@ const visitImageSchema = z.object({
 });
 
 const visitSchema = z.object({
-  establishment: z.number().int().positive().nullable().optional(),
+  establishment: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
   visitDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
   products: z.array(visitProductSchema).optional().default([]),
   isDraft: z.boolean().optional(),
@@ -199,9 +200,13 @@ const clientSearchSchema = z.object({
 });
 
 const agendaEntrySchema = z.object({
-  clientId: z.coerce.number().int().positive(),
-  nickname: z.string().trim().optional().default(''),
-  notes: z.string().trim().optional().default(''),
+  clientId: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
+  promotorId: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
+  nickname: z.string().trim().min(1, 'Informe o apelido da loja.'),
+  daysBetweenVisits: z.preprocess(
+    (value) => (value === '' || value === null ? 7 : value),
+    z.coerce.number().int().positive().default(7)
+  ),
 });
 
 const weeklyVehicleCheckSchema = z.object({
@@ -399,6 +404,7 @@ export async function searchClients(
   }
 
   const {
+    clientId,
     clientName,
     fantasyName,
     document,
@@ -423,6 +429,7 @@ export async function searchClients(
     conditions.push(sql.replace('$VALUE', `$${values.length}`));
   };
 
+  addCondition('id::text ILIKE $VALUE', clientId);
   addCondition('client_name ILIKE $VALUE', clientName);
   addCondition('fantasy_name ILIKE $VALUE', fantasyName);
   addCondition('city ILIKE $VALUE', city);
@@ -471,6 +478,7 @@ export async function searchClients(
       )`,
       clientName
     );
+    addAgendaCondition('c.id::text ILIKE $VALUE', clientId);
     addAgendaCondition(
       `(
         translate(lower(c.fantasy_name), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc') ILIKE ${textNormalizationSql}
@@ -562,94 +570,76 @@ export async function searchClients(
   }
 }
 
-export async function createAgendaEntry(data: z.infer<typeof agendaEntrySchema>) {
-  const promotorId = await getCurrentPromotorId();
-
-  if (!promotorId) {
+export async function createAgendaEntry(data: unknown) {
+  const session = await getSession();
+  if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
-
   const validation = agendaEntrySchema.safeParse(data);
-
   if (!validation.success) {
-    const fieldLabels: Record<string, string> = {
-      clientId: 'Buscar cliente na base',
-    };
-
-    const firstIssue = validation.error.issues[0];
-    const fieldName = firstIssue?.path[0];
-    const label =
-      typeof fieldName === 'string' ? fieldLabels[fieldName] : null;
-
     return {
       success: false,
-      error: label
-        ? `Preencha o campo obrigatório "${label}".`
-        : 'Preencha os dados obrigatórios da agenda.',
+      error: 'Informe o apelido da loja e uma frequencia inteira positiva.',
     };
   }
 
-  const { clientId, nickname, notes } = validation.data;
-
   try {
-    const client = await pool.connect();
-
-    try {
-      const existingClient = await client.query('SELECT 1 FROM clients WHERE id = $1', [clientId]);
-
-      if (!existingClient.rowCount) {
-        return { success: false, error: 'Cliente nao encontrado na base.' };
-      }
-
-      const existingAgendaEntry = await client.query(
-        'SELECT 1 FROM promotor_client_agenda WHERE promotor_id = $1 AND client_id = $2 LIMIT 1',
-        [promotorId, clientId]
-      );
-
-      if (existingAgendaEntry.rowCount) {
-        return { success: false, error: 'Esse cliente ja esta na agenda.' };
-      }
-
-      await client.query(
-        `INSERT INTO promotor_client_agenda (
-           promotor_id,
-           client_id,
-           nickname,
-           notes
-         ) VALUES ($1, $2, $3, $4)`,
-        [
-          promotorId,
-          clientId,
-          nickname || null,
-          notes || null,
-        ]
-      );
-    } finally {
-      client.release();
-    }
-
+    const payload = {
+      nickname: validation.data.nickname,
+      daysBetweenVisits: validation.data.daysBetweenVisits,
+      ...(validation.data.clientId !== undefined ? { clientId: validation.data.clientId } : {}),
+      ...(validation.data.promotorId !== undefined ? { promotorId: validation.data.promotorId } : {}),
+    };
+    await createPromotorAgendaEntry(session.accessToken, payload);
     revalidatePath('/agenda');
-
     return { success: true };
   } catch (error) {
     console.error('Create agenda entry error:', error);
-    return { success: false, error: 'Nao foi possivel adicionar o cliente na agenda.' };
+    if (error instanceof ApiError && error.status === 409) {
+      return {
+        success: false,
+        error: validation.data.clientId !== undefined
+          ? 'O cliente escolhido ja esta vinculado a outra loja atendida.'
+          : 'Nao foi possivel cadastrar a loja porque existe um conflito com outro registro.',
+      };
+    }
+
+    if (error instanceof ApiError) {
+      if (error.status === 400) {
+        return {
+          success: false,
+          error: 'A API rejeitou os dados. Confira o apelido, os vinculos e a frequencia informados.',
+        };
+      }
+
+      if (error.status >= 500) {
+        return {
+          success: false,
+          error: 'O servico de lojas atendidas esta indisponivel. Tente novamente mais tarde.',
+        };
+      }
+
+      return { success: false, error: error.message || 'Nao foi possivel adicionar a loja na agenda.' };
+    }
+
+    return { success: false, error: 'Nao foi possivel adicionar a loja atendida.' };
   }
 }
 
-export async function removeAgendaEntry(agendaEntryId: number) {
+export async function removeAgendaEntry(agendaEntryId: unknown) {
   const session = await getSession();
 
   if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
 
-  if (!Number.isFinite(agendaEntryId) || agendaEntryId <= 0) {
-    return { success: false, error: 'Cliente da agenda invalido.' };
+  const validation = z.union([z.string().min(1), z.number().int().nonnegative()]).safeParse(agendaEntryId);
+  if (!validation.success) {
+    return { success: false, error: 'Loja atendida invalida.' };
   }
 
   try {
-    await deletePromotorAgendaEntry(session.accessToken, agendaEntryId);
+    await deletePromotorAgendaEntry(session.accessToken, validation.data);
 
     revalidatePath('/agenda');
 
@@ -657,9 +647,9 @@ export async function removeAgendaEntry(agendaEntryId: number) {
   } catch (error) {
     console.error('Delete agenda entry API error:', error);
     if (error instanceof ApiError) {
-      return { success: false, error: error.message || 'Nao foi possivel excluir o cliente da agenda.' };
+      return { success: false, error: error.message || 'Nao foi possivel excluir a loja atendida.' };
     }
-    return { success: false, error: 'Nao foi possivel excluir o cliente da agenda.' };
+    return { success: false, error: 'Nao foi possivel excluir a loja atendida.' };
   }
 }
 
@@ -701,6 +691,7 @@ export async function createVisit(data: z.infer<typeof visitSchema>, visitId?: n
     const nextVisitId = savedVisit?.id ?? visitId;
 
     revalidatePath('/');
+    revalidatePath('/agenda');
     revalidatePath('/visitas/nova');
     if (nextVisitId) {
       revalidatePath(`/visitas/${nextVisitId}`);

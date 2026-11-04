@@ -37,7 +37,7 @@ export default async function NewVisitPage({ searchParams }: NewVisitPageProps) 
   const initialClient =
     resolvedSearchParams.clientId && resolvedSearchParams.clientName
       ? {
-          id: Number(resolvedSearchParams.clientId),
+          id: resolvedSearchParams.clientId,
           nickname: resolvedSearchParams.nickname ?? '',
           client_name: resolvedSearchParams.clientName,
           fantasy_name: resolvedSearchParams.fantasyName ?? '',

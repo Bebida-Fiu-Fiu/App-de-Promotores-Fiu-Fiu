@@ -13,10 +13,14 @@ export type PromotorVisitImageUpload = {
 
 export type PromotorVisitImageArrayInput = Array<string | PromotorVisitImageUpload>;
 
+import type { OpaqueId } from '@/types/auth';
+
+export type { OpaqueId } from '@/types/auth';
+
 export type PromotorVisit = {
   id: number;
-  promotorId: number | null;
-  establishmentId: number | null;
+  promotorId: OpaqueId | null;
+  establishmentId: OpaqueId | null;
   establishment: string;
   visitDate: string | null;
   products: PromotorVisitProduct[];
@@ -47,36 +51,39 @@ export type PromotorMileageRecord = {
   updatedAt: string | null;
 };
 
-export type PromotorAgendaEntry = {
-  id: number;
-  promotorId: number | null;
+export type AttendedStore = {
+  id: OpaqueId | null;
+  promotorId: OpaqueId | null;
   promotorName: string | null;
   promotorEmail: string | null;
-  clientId: number;
+  clientId: OpaqueId | null;
   clientName: string;
   fantasyName: string;
   city: string;
   state: string;
-  nickname: string | null;
+  nickname: string;
   notes: string | null;
   document: string;
   address: string;
   addressNumber: string | null;
   neighborhood: string;
+  daysBetweenVisits: number;
   lastVisitDate: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 };
 
+export type PromotorAgendaEntry = AttendedStore;
+
 export type PromotorProfile = {
-  id: number | null;
+  id: OpaqueId | null;
   email: string;
   fullName: string | null;
   role: 'promotor' | 'comercial';
 };
 
 export type PromotorVisitPayload = {
-  establishment?: number | null;
+  establishment?: OpaqueId | null;
   visitDate?: string | null;
   products: PromotorVisitProduct[];
   beforeImages?: PromotorVisitImageArrayInput;

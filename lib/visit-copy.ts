@@ -1,10 +1,10 @@
-import type { PromotorVisitProduct } from '@/types/promotor';
+import type { OpaqueId, PromotorVisitProduct } from '@/types/promotor';
 
 type VisitCopyDetails = {
   visitDate: string;
   userFullName: string | null;
   establishment: string;
-  establishmentId: number | null;
+  establishmentId: OpaqueId | null;
   products: PromotorVisitProduct[];
 };
 
