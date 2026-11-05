@@ -8,8 +8,10 @@ import {
   listAllPromotorAgendas,
   listPromotorAgendaByPromotorId,
   signInPromotor,
+  updatePromotorAgendaEntry,
   updatePromotorVisit,
 } from '@/lib/api/promotor';
+import type { AttendedStore } from '@/types/promotor';
 
 describe('promotor api', () => {
   beforeEach(() => {
@@ -145,6 +147,68 @@ describe('promotor api', () => {
     expect(JSON.parse(String(init?.body))).toEqual({
       nickname: 'Loja sem vinculos',
       daysBetweenVisits: 7,
+    });
+  });
+
+  it('patches an attended store using its opaque ID and preserves explicit unlinks', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: {
+            id: '0009',
+            nickname: 'Loja atualizada',
+            client_id: null,
+            promotor_id: null,
+            days_between_visits: 14,
+            notes: 'Nova observacao',
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
+    );
+    const currentStore: AttendedStore = {
+      id: '0009',
+      promotorId: '00017',
+      promotorName: 'Promotor Teste',
+      promotorEmail: null,
+      clientId: '00042',
+      clientName: 'Mercado Central',
+      fantasyName: 'Central',
+      city: 'Sao Paulo',
+      state: 'SP',
+      nickname: 'Loja Centro',
+      notes: null,
+      document: '',
+      address: '',
+      addressNumber: null,
+      neighborhood: '',
+      daysBetweenVisits: 7,
+      lastVisitDate: null,
+      createdAt: null,
+      updatedAt: null,
+    };
+
+    const updatedStore = await updatePromotorAgendaEntry(
+      'token-123',
+      '0009',
+      { nickname: 'Loja atualizada', clientId: null, promotorId: null },
+      currentStore
+    );
+
+    const [url, init] = vi.mocked(fetch).mock.calls[0];
+    expect(String(url)).toBe('https://api.example.com/promotor/agenda/0009');
+    expect(init?.method).toBe('PATCH');
+    expect(JSON.parse(String(init?.body))).toEqual({
+      nickname: 'Loja atualizada',
+      clientId: null,
+      promotorId: null,
+    });
+    expect(updatedStore).toMatchObject({
+      id: '0009',
+      clientId: null,
+      promotorId: null,
+      daysBetweenVisits: 14,
+      notes: 'Nova observacao',
     });
   });
 

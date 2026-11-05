@@ -23,6 +23,7 @@ import {
   getPromotorMe,
   signInPromotor,
   signUpPromotor,
+  updatePromotorAgendaEntry,
   updatePromotorVisit,
   requestApiPasswordRecovery,
   verifyApiRecoveryCode,
@@ -30,6 +31,7 @@ import {
 } from '@/lib/api/promotor';
 import { createCommercialVisit, updateCommercialVisit } from '@/lib/api/comercial';
 import type { AttendedStore } from '@/types/promotor';
+import type { AttendedStorePatch } from '@/lib/api/promotor';
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -210,12 +212,22 @@ const clientSearchSchema = z.object({
 
 const agendaEntrySchema = z.object({
   clientId: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
-  promotorId: z.union([z.string().min(1), z.number().int().nonnegative()]).optional(),
   nickname: z.string().trim().min(1, 'Informe o apelido da loja.'),
   daysBetweenVisits: z.preprocess(
     (value) => (value === '' || value === null ? 7 : value),
     z.coerce.number().int().positive().default(7)
   ),
+});
+
+const attendedStorePatchSchema = z.object({
+  nickname: z.string().trim().min(1, 'O apelido da loja e obrigatorio.').optional(),
+  clientId: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
+  promotorId: z.union([z.string().min(1), z.number().int().nonnegative()]).nullable().optional(),
+  daysBetweenVisits: z.preprocess(
+    (value) => (typeof value === 'string' && value.trim() ? Number(value) : value),
+    z.number().int().positive('A frequencia deve ser um inteiro positivo.').optional()
+  ),
+  notes: z.string().trim().nullable().optional(),
 });
 
 const weeklyVehicleCheckSchema = z.object({
@@ -568,6 +580,14 @@ export async function createAgendaEntry(data: unknown) {
   if (!session) {
     return { success: false, error: 'Sessao expirada. Faca login novamente.' };
   }
+  const promotorId = getPromotorOpaqueIdFromSession(session);
+  if (promotorId === null) {
+    return {
+      success: false,
+      error: 'Nao foi possivel identificar seu usuario para atribuir como promotor responsavel.',
+    };
+  }
+
   const validation = agendaEntrySchema.safeParse(data);
   if (!validation.success) {
     return {
@@ -581,7 +601,7 @@ export async function createAgendaEntry(data: unknown) {
       nickname: validation.data.nickname,
       daysBetweenVisits: validation.data.daysBetweenVisits,
       ...(validation.data.clientId !== undefined ? { clientId: validation.data.clientId } : {}),
-      ...(validation.data.promotorId !== undefined ? { promotorId: validation.data.promotorId } : {}),
+      promotorId,
     };
     await createPromotorAgendaEntry(session.accessToken, payload);
     revalidatePath('/agenda');
@@ -616,6 +636,104 @@ export async function createAgendaEntry(data: unknown) {
     }
 
     return { success: false, error: 'Nao foi possivel adicionar a loja atendida.' };
+  }
+}
+
+export async function updateAgendaEntry(
+  attendedStoreId: unknown,
+  data: unknown,
+  currentStore: AttendedStore
+) {
+  const session = await getSession();
+  if (!session) {
+    return { success: false, error: 'Sessao expirada. Faca login novamente.' };
+  }
+
+  const idValidation = z.union([z.string().min(1), z.number().int().nonnegative()]).safeParse(attendedStoreId);
+  if (!idValidation.success) {
+    return { success: false, error: 'Identificador da loja atendida invalido.' };
+  }
+
+  const validation = attendedStorePatchSchema.safeParse(data);
+  if (!validation.success) {
+    const firstIssue = validation.error.issues[0];
+    return {
+      success: false,
+      error: firstIssue?.message ?? 'Confira os dados informados para a loja atendida.',
+    };
+  }
+
+  if (typeof data !== 'object' || data === null) {
+    return { success: false, error: 'Dados invalidos para atualizar a loja atendida.' };
+  }
+
+  const input = data;
+  const patch: AttendedStorePatch = {};
+  const fields: Array<keyof AttendedStorePatch> = [
+    'nickname',
+    'clientId',
+    'promotorId',
+    'daysBetweenVisits',
+    'notes',
+  ];
+
+  for (const field of fields) {
+    if (
+      Object.prototype.hasOwnProperty.call(input, field) &&
+      validation.data[field] !== undefined
+    ) {
+      Object.assign(patch, { [field]: validation.data[field] });
+    }
+  }
+
+  if (Object.keys(patch).length === 0) {
+    return { success: false, error: 'Nenhuma alteracao foi informada.' };
+  }
+
+  try {
+    const store = await updatePromotorAgendaEntry(
+      session.accessToken,
+      idValidation.data,
+      patch,
+      currentStore
+    );
+    revalidatePath('/agenda');
+    return { success: true, store };
+  } catch (error) {
+    console.error('Update attended store error:', error);
+    if (error instanceof ApiError) {
+      if (error.status === 400) {
+        return {
+          success: false,
+          error: 'A API rejeitou as alteracoes. Confira o apelido e a frequencia informados.',
+        };
+      }
+
+      if (error.status === 404) {
+        return {
+          success: false,
+          error: 'Esta loja atendida nao foi encontrada. Atualize a pagina e tente novamente.',
+        };
+      }
+
+      if (error.status === 409) {
+        return {
+          success: false,
+          error: 'O cliente escolhido ja esta vinculado a outra loja atendida.',
+        };
+      }
+
+      if (error.status >= 500) {
+        return {
+          success: false,
+          error: 'O servico de lojas atendidas esta indisponivel. Tente novamente mais tarde.',
+        };
+      }
+
+      return { success: false, error: error.message || 'Nao foi possivel atualizar a loja atendida.' };
+    }
+
+    return { success: false, error: 'Ocorreu um erro inesperado ao atualizar a loja atendida.' };
   }
 }
 

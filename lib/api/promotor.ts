@@ -761,6 +761,63 @@ export async function createPromotorAgendaEntry(
   });
 }
 
+export type AttendedStorePatch = {
+  nickname?: string;
+  clientId?: OpaqueId | null;
+  promotorId?: OpaqueId | null;
+  daysBetweenVisits?: number;
+  notes?: string | null;
+};
+
+export async function updatePromotorAgendaEntry(
+  token: string,
+  attendedStoreId: OpaqueId,
+  patch: AttendedStorePatch,
+  currentStore: AttendedStore
+) {
+  const response = await apiRequest(
+    `/promotor/agenda/${encodeURIComponent(String(attendedStoreId))}`,
+    {
+      method: 'PATCH',
+      token,
+      body: patch,
+    }
+  );
+  const updatedStore =
+    readNestedRecord(response, ['attendedStore', 'attended_store', 'store', 'agenda', 'data']) ??
+    response;
+
+  if (!isRecord(updatedStore)) {
+    return null;
+  }
+
+  const responseFields = { ...updatedStore };
+  const aliases = [
+    ['promotorId', 'promotor_id'],
+    ['promotorName', 'promotor_name'],
+    ['promotorEmail', 'promotor_email'],
+    ['clientId', 'client_id'],
+    ['clientName', 'client_name'],
+    ['fantasyName', 'fantasy_name'],
+    ['addressNumber', 'address_number'],
+    ['daysBetweenVisits', 'days_between_visits'],
+    ['lastVisitDate', 'last_visit_date'],
+    ['createdAt', 'created_at'],
+    ['updatedAt', 'updated_at'],
+  ] as const;
+  for (const [camelCase, snakeCase] of aliases) {
+    if (!(camelCase in responseFields) && snakeCase in responseFields) {
+      responseFields[camelCase] = responseFields[snakeCase];
+    }
+  }
+
+  return normalizeAgendaEntry({
+    ...currentStore,
+    ...patch,
+    ...responseFields,
+  });
+}
+
 export async function deletePromotorAgendaEntry(token: string, agendaEntryId: OpaqueId) {
   await apiRequest(`/promotor/agenda/${encodeURIComponent(String(agendaEntryId))}`, {
     method: 'DELETE',

@@ -3,8 +3,7 @@ import { ArrowLeft } from 'lucide-react';
 import { redirect } from 'next/navigation';
 
 import { AddAgendaClientForm } from '@/components/agenda/add-agenda-client-form';
-import { listAllPromotorAgendas } from '@/lib/api/promotor';
-import { getSession } from '@/lib/auth';
+import { getPromotorOpaqueIdFromSession, getSession } from '@/lib/auth';
 import type { OpaqueId } from '@/types/promotor';
 
 type PromotorOption = {
@@ -19,38 +18,14 @@ export default async function NewAgendaClientPage() {
     redirect('/login');
   }
 
-  let promotors: PromotorOption[] = [];
-  let promoterListMessage: string | null = null;
-  try {
-    const agendas = await listAllPromotorAgendas(session.accessToken);
-    const availablePromotors = new Map<string, PromotorOption>();
-    for (const agenda of agendas) {
-      if (agenda.promotorId === null) {
-        continue;
-      }
-
-      const optionKey = `${typeof agenda.promotorId}:${String(agenda.promotorId)}`;
-      if (!availablePromotors.has(optionKey)) {
-        availablePromotors.set(optionKey, {
-          id: agenda.promotorId,
-          name: agenda.promotorName || `Promotor ${String(agenda.promotorId)}`,
-        });
-      }
-    }
-
-    promotors = Array.from(availablePromotors.values()).sort((left, right) =>
-      left.name.localeCompare(right.name, 'pt-BR')
-    );
-
-    if (promotors.length === 0) {
-      promoterListMessage =
-        'Nao ha promotores nas agendas retornadas pela API. Ela ainda nao oferece um endpoint de listagem de promotores; para atribuir novas lojas sem agendas existentes, e necessario disponibilizar essa fonte.';
-    }
-  } catch (error) {
-    promoterListMessage =
-      'Nao foi possivel carregar os promotores das agendas existentes. Tente novamente mais tarde.';
-    console.error('Agenda promoter options lookup error:', error);
-  }
+  const promotorId = getPromotorOpaqueIdFromSession(session);
+  const currentPromotor: PromotorOption | null =
+    promotorId === null
+      ? null
+      : {
+          id: promotorId,
+          name: session.user.fullName || session.user.email || `Promotor ${String(promotorId)}`,
+        };
 
   return (
     <main className="min-h-screen bg-[var(--background)] px-4 py-10">
@@ -70,7 +45,7 @@ export default async function NewAgendaClientPage() {
           </p>
         </div>
 
-        <AddAgendaClientForm promotors={promotors} promoterListMessage={promoterListMessage} />
+        <AddAgendaClientForm currentPromotor={currentPromotor} />
       </section>
     </main>
   );
