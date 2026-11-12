@@ -12,6 +12,8 @@ import {
   getSession,
 } from '@/lib/auth';
 import { getWeeklyVehicleCheckDateContext } from '@/lib/weekly-vehicle-check';
+import { resolveRoleFromServer } from '@/lib/session-role';
+import { toApiVisitDate } from '@/lib/commercial-dates';
 import { ApiError } from '@/lib/api/client';
 import {
   createPromotorMileage,
@@ -41,7 +43,6 @@ const loginSchema = z.object({
 const signupSchema = loginSchema.extend({
   fullName: z.string().min(3),
   confirmPassword: z.string().min(6),
-  role: z.enum(['promotor', 'comercial']),
 }).refine((data) => data.password === data.confirmPassword, {
   message: 'Passwords do not match',
   path: ['confirmPassword'],
@@ -401,14 +402,14 @@ export async function login(data: z.infer<typeof loginSchema>) {
 
   try {
     const authResult = await signInPromotor(validation.data);
-    const me = await getPromotorMe(authResult.accessToken).catch(() => authResult.user);
+    const me = await getPromotorMe(authResult.accessToken).catch(() => null);
     const user = {
       ...authResult.user,
       ...me,
-      role: me.role === 'comercial' ? 'comercial' : authResult.user.role,
-      email: me.email || authResult.user.email || validation.data.email,
-      fullName: me.fullName ?? authResult.user.fullName,
-      id: me.id ?? authResult.user.id,
+      role: resolveRoleFromServer(me),
+      email: me?.email || authResult.user.email || validation.data.email,
+      fullName: me?.fullName ?? authResult.user.fullName,
+      id: me?.id ?? authResult.user.id,
     };
 
     await clearSession();
@@ -436,14 +437,14 @@ export async function signUp(data: z.infer<typeof signupSchema>) {
 
   try {
     const authResult = await signUpPromotor(validation.data);
-    const me = await getPromotorMe(authResult.accessToken).catch(() => authResult.user);
+    const me = await getPromotorMe(authResult.accessToken).catch(() => null);
     const user = {
       ...authResult.user,
       ...me,
-      role: validation.data.role,
-      email: me.email || authResult.user.email || validation.data.email,
-      fullName: me.fullName ?? authResult.user.fullName ?? validation.data.fullName,
-      id: me.id ?? authResult.user.id,
+      role: resolveRoleFromServer(me),
+      email: me?.email || authResult.user.email || validation.data.email,
+      fullName: me?.fullName ?? authResult.user.fullName ?? validation.data.fullName,
+      id: me?.id ?? authResult.user.id,
     };
 
     await clearSession();
@@ -473,7 +474,8 @@ export async function getSessionHomePath() {
 }
 
 export async function searchClients(
-  filters: z.infer<typeof clientSearchSchema>,
+  // z.input: os filtros têm default no schema, então quem chama pode omitir os vazios.
+  filters: z.input<typeof clientSearchSchema>,
   scope: 'agenda' | 'general' = 'general'
 ) {
   const validation = clientSearchSchema.safeParse(filters);
@@ -980,7 +982,7 @@ export async function createCommercialSubmission(
       value,
       salesQuantity,
       sold,
-      visitDates,
+      visitDates: visitDates.map(toApiVisitDate),
     });
 
     revalidatePath('/comercial');
@@ -1039,7 +1041,7 @@ export async function updateCommercialSubmission(
       value,
       salesQuantity,
       sold,
-      visitDates,
+      visitDates: visitDates.map(toApiVisitDate),
     });
 
     revalidatePath('/comercial');

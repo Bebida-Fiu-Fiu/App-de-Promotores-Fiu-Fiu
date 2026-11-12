@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { CalendarDays } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useFieldArray, useForm, useWatch } from 'react-hook-form';
@@ -188,6 +188,9 @@ export function CommercialSubmissionForm({
   submissionId,
   initialValues,
 }: CommercialSubmissionFormProps) {
+  // useId é igual no servidor e no navegador; field.id (useFieldArray) é aleatório
+  // e causava erro de hidratação no id do seletor de data.
+  const formId = useId();
   const router = useRouter();
   const [serverError, setServerError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -431,7 +434,7 @@ export function CommercialSubmissionForm({
             <div className="mt-4 space-y-3">
               {visitDateFields.map((field, index) => {
                 const visitDateField = register(`visitDates.${index}.value`);
-                const calendarInputId = `visit-date-calendar-${field.id}`;
+                const calendarInputId = `${formId}-visit-date-calendar-${index}`;
                 const currentVisitDateValue = watchedVisitDates?.[index]?.value ?? '';
 
                 return (

@@ -4,8 +4,8 @@ import { notFound, redirect } from 'next/navigation';
 
 import { Header } from '@/components/home/header';
 import { getSession } from '@/lib/auth';
-import { listAllCommercialVisits, listCommercialVisitsByComercialId } from '@/lib/api/comercial';
-import { getHeaderFullName } from '@/lib/header-user';
+import { getCommercialVisitById } from '@/lib/api/comercial';
+import { toDisplayVisitDate } from '@/lib/commercial-dates';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('pt-BR', {
@@ -25,7 +25,6 @@ export default async function CommercialClientPage({
     redirect('/login');
   }
 
-  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
 
   const resolvedParams = await params;
   const submissionId = Number(resolvedParams.id);
@@ -34,11 +33,7 @@ export default async function CommercialClientPage({
     notFound();
   }
 
-  const submissions =
-    typeof session.user.id === 'number'
-      ? await listCommercialVisitsByComercialId(session.accessToken, session.user.id).catch(() => [])
-      : await listAllCommercialVisits(session.accessToken).catch(() => []);
-  const submission = submissions.find((entry) => entry.id === submissionId) ?? null;
+  const submission = await getCommercialVisitById(session.accessToken, submissionId).catch(() => null);
 
   if (!submission) {
     notFound();
@@ -46,7 +41,7 @@ export default async function CommercialClientPage({
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(0,156,108,0.12),_transparent_28%),linear-gradient(180deg,_#0f2d3d_0%,_var(--background)_46%,_#091c27_100%)] pb-12">
-      <Header fullName={fullName} />
+      <Header />
 
       <section className="mx-auto w-full max-w-6xl px-4 pb-12 pt-24">
         <Link
@@ -117,7 +112,7 @@ export default async function CommercialClientPage({
                       key={`${visitDate}-${index}`}
                       className="rounded-full border border-[#7fe7c5]/25 bg-[#7fe7c5]/10 px-4 py-2 text-sm font-semibold text-[#d9fff1]"
                     >
-                      {visitDate}
+                      {toDisplayVisitDate(visitDate)}
                     </span>
                   ))}
                 </div>

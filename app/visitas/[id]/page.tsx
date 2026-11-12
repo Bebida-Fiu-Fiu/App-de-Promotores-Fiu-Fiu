@@ -119,7 +119,7 @@ export default async function VisitDetailsPage({
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(0,156,108,0.12),_transparent_32%),linear-gradient(180deg,_#0f2d3d_0%,_var(--background)_42%,_#091c27_100%)] px-4 py-10 pb-28">
-      <Header fullName={fullName} />
+      <Header />
 
       <section className="mx-auto w-full max-w-4xl px-6 pt-24">
         <div className="rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] p-6 shadow-[0_20px_50px_rgba(0,0,0,0.2)]">

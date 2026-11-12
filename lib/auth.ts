@@ -6,6 +6,9 @@ export const SESSION_ROLE_COOKIE_NAME = 'ff_role';
 export const SESSION_ACCESS_TOKEN_COOKIE_NAME = 'ff_access_token';
 export const SESSION_USER_COOKIE_NAME = 'ff_user';
 
+// Route handler que limpa a sessão e leva ao login (ver app/api/session/expired/route.ts).
+export const SESSION_EXPIRED_PATH = '/api/session/expired';
+
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
 
 function normalizeStoredAccessToken(token: string) {

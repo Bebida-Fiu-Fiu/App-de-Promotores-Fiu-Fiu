@@ -329,6 +329,46 @@ describe('actions flows', () => {
     );
   });
 
+  it('signUp ignores any role sent by the browser and uses the one from /promotor/me (FIUFIU-33)', async () => {
+    signUpPromotor.mockResolvedValue({
+      accessToken: 'token-signup',
+      user: { id: 11, email: 'novo@fiu-fiu.com', fullName: 'Novo Usuario', role: 'comercial' },
+    });
+    getPromotorMe.mockResolvedValue({ id: 11, email: 'novo@fiu-fiu.com', fullName: 'Novo Usuario', role: 'promotor' });
+
+    const { signUp } = await import('@/lib/actions');
+    const result = await signUp({
+      fullName: 'Novo Usuario',
+      email: 'novo@fiu-fiu.com',
+      password: '123456',
+      confirmPassword: '123456',
+      role: 'comercial',
+    } as Parameters<typeof signUp>[0]);
+
+    expect(result).toEqual({ success: true, homePath: '/checkin' });
+    expect(signUpPromotor.mock.calls[0][0]).not.toHaveProperty('role');
+    expect(createSession).toHaveBeenCalledWith({
+      accessToken: 'token-signup',
+      user: expect.objectContaining({ role: 'promotor' }),
+    });
+  });
+
+  it('login falls back to the least privileged role when /promotor/me fails', async () => {
+    signInPromotor.mockResolvedValue({
+      accessToken: 'token-login',
+      user: { id: 12, email: 'x@fiu-fiu.com', fullName: 'X', role: 'comercial' },
+    });
+    getPromotorMe.mockRejectedValue(new ApiError('down', 503));
+
+    const { login } = await import('@/lib/actions');
+    await login({ email: 'x@fiu-fiu.com', password: '123456' });
+
+    expect(createSession).toHaveBeenCalledWith({
+      accessToken: 'token-login',
+      user: expect.objectContaining({ role: 'promotor' }),
+    });
+  });
+
   it('creates a visit with the current session token and normalized payload', async () => {
     getSession.mockResolvedValue({
       accessToken: 'session-token',

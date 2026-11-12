@@ -15,9 +15,6 @@ const signupSchema = z
     email: z.string().email('Digite um email valido'),
     password: z.string().min(6, 'A senha precisa ter pelo menos 6 caracteres'),
     confirmPassword: z.string().min(6, 'Confirme a senha'),
-    role: z.enum(['promotor', 'comercial'], {
-      message: 'Selecione uma funcao',
-    }),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'As senhas precisam ser iguais',
@@ -123,29 +120,6 @@ export function SignupForm() {
           )}
         </div>
 
-        <div>
-          <p className="block text-sm font-medium text-white">Funcao</p>
-          <div className="mt-2 grid grid-cols-2 gap-3">
-            {[
-              { value: 'promotor', label: 'Promotor' },
-              { value: 'comercial', label: 'Comercial' },
-            ].map((option) => (
-              <label
-                key={option.value}
-                className="flex cursor-pointer items-center gap-2 rounded-md border border-black/40 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm"
-              >
-                <input
-                  type="radio"
-                  value={option.value}
-                  className="h-4 w-4 accent-[#009c6c]"
-                  {...register('role')}
-                />
-                <span>{option.label}</span>
-              </label>
-            ))}
-          </div>
-          {errors.role && <p className="mt-1 text-sm text-red-200">{errors.role.message}</p>}
-        </div>
       </div>
 
       <button

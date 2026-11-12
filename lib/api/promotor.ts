@@ -18,7 +18,6 @@ type PromotorAuthPayload = {
   fullName?: string;
   email: string;
   password: string;
-  role?: 'promotor' | 'comercial';
 };
 
 type AuthResult = {
@@ -226,7 +225,8 @@ function normalizeUser(payload: unknown): SessionUser {
   const embeddedPayload =
     isRecord(payload) ? parseEmbeddedJsonString(payload.message) : null;
   const source = embeddedPayload ?? payload;
-  const record = readNestedRecord(source, ['user', 'data']) ?? {};
+  // GET /promotor/me responde { promotor: {...} }; o login antigo usava { user } ou { data }.
+  const record = readNestedRecord(source, ['promotor', 'user', 'data']) ?? {};
 
   return {
     id: toOpaqueId(record.id ?? record.promotorId ?? record.userId),
@@ -647,7 +647,6 @@ export async function signUpPromotor(payload: PromotorAuthPayload) {
       full_name: payload.fullName,
       email: payload.email,
       password: payload.password,
-      role: payload.role,
     },
   });
 
@@ -754,7 +753,7 @@ export async function createPromotorAgendaEntry(
     daysBetweenVisits: number;
   }
 ) {
-  return apiRequest('/promotor/agenda', {
+  return apiRequest('/promotors/agenda', {
     method: 'POST',
     token,
     body: payload,

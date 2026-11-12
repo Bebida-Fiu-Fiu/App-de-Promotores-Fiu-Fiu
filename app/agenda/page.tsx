@@ -6,9 +6,12 @@ import { AppTabs } from '@/components/home/app-tabs';
 import { Header } from '@/components/home/header';
 import { ApiError } from '@/lib/api/client';
 import { filterAgendaEntriesByPromotor } from '@/lib/agenda-frequency';
-import { listAllPromotorAgendas, listAllVisitsReportByPromotorId } from '@/lib/api/promotor';
+import {
+  listAllPromotorAgendas,
+  listAllVisitsReportByPromotorId,
+  listPromotorAgendaByPromotorId,
+} from '@/lib/api/promotor';
 import { getPromotorOpaqueIdFromSession, getSession } from '@/lib/auth';
-import { getHeaderFullName } from '@/lib/header-user';
 import type { AttendedStore, PromotorVisit } from '@/types/promotor';
 
 function getPromotorFilterValue(id: NonNullable<AttendedStore['promotorId']>) {
@@ -30,7 +33,6 @@ export default async function AgendaPage({
   const query = resolvedSearchParams.q?.trim() ?? '';
   const selectedPromotorId = resolvedSearchParams.promotorId ?? '';
 
-  let fullName: string | null = session.user.fullName;
   let agendaEntries: AttendedStore[] = [];
   let allAgendaEntries: AttendedStore[] = [];
   const visitsByPromotor = new Map<string, PromotorVisit[]>();
@@ -40,13 +42,16 @@ export default async function AgendaPage({
   const isAdminView = session.user.role === 'comercial';
   const availablePromotors = new Map<string, { id: NonNullable<AttendedStore['promotorId']>; name: string }>();
 
-  fullName = await getHeaderFullName(session.accessToken, fullName);
-
   if (!isAdminView && currentPromotorId === null) {
     agendaUnavailableMessage = 'Nao foi possivel identificar o promotor da sessao para filtrar a agenda.';
   } else {
     try {
-      allAgendaEntries = await listAllPromotorAgendas(session.accessToken);
+      // A lista de todos os promotores é restrita à equipe na API; o promotor busca só a própria agenda.
+      allAgendaEntries = isAdminView
+        ? await listAllPromotorAgendas(session.accessToken)
+        : currentPromotorId === null
+          ? []
+          : await listPromotorAgendaByPromotorId(session.accessToken, currentPromotorId);
       for (const entry of allAgendaEntries) {
         if (entry.promotorId !== null) {
           availablePromotors.set(`${typeof entry.promotorId}:${String(entry.promotorId)}`, {
@@ -136,7 +141,7 @@ export default async function AgendaPage({
 
   const content = (
     <main className="min-h-screen bg-[var(--background)] px-4 pt-15">
-      <Header fullName={fullName} />
+      <Header />
       <AppTabs current="agenda" role={session.user.role} />
 
       <section className="mx-auto w-full max-w-6xl px-6 pt-8">

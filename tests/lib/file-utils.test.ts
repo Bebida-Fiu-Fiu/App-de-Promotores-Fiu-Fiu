@@ -1,3 +1,5 @@
+import { describe, expect, it } from 'vitest';
+
 import { inferMimeTypeFromFilename, isAcceptedImageFile } from '@/lib/file-utils';
 
 describe('file-utils image acceptance', () => {

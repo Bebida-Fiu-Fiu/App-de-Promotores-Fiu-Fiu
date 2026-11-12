@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useState, useTransition } from 'react';
 
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
 import type { PromotorVisit } from '@/types/promotor';
@@ -12,22 +13,35 @@ type VisitListProps = {
   hasNextPage: boolean;
   totalVisits: number | null;
   pageSize: number;
+  loadError?: string | null;
 };
 
-export function VisitList({ visits, page, hasNextPage, totalVisits, pageSize }: VisitListProps) {
-  const [items, setItems] = useState(visits);
+export function VisitList({
+  visits,
+  page,
+  hasNextPage,
+  totalVisits,
+  pageSize,
+  loadError = null,
+}: VisitListProps) {
+  const router = useRouter();
+  const [isRetrying, startRetry] = useTransition();
+  // Guarda só os IDs excluídos e deriva a lista das props: assim a lista acompanha
+  // a troca de página e o router.refresh() sem ficar presa a uma cópia antiga.
+  const [deletedIds, setDeletedIds] = useState<ReadonlySet<PromotorVisit['id']>>(() => new Set());
+  const items = visits.filter((visit) => !deletedIds.has(visit.id));
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const hasPreviousPage = page > 1;
   const visibleTotalVisits =
     totalVisits === null ? null : Math.max(totalVisits - (visits.length - items.length), 0);
 
   const handleDeleted = (visitId: number) => {
-    setItems((currentItems) => currentItems.filter((visit) => visit.id !== visitId));
-    setSuccessMessage('Rascunho excluido com sucesso.');
+    setDeletedIds((current) => new Set(current).add(visitId));
+    setSuccessMessage('Rascunho excluído com sucesso.');
   };
 
   return (
-    <section className="mx-auto w-full max-w-4xl px-6 pt-24">
+    <section className="mx-auto w-full max-w-4xl px-6 pt-8">
       <div className="flex flex-col gap-4 rounded-[28px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.03))] px-5 py-5 shadow-[0_20px_50px_rgba(0,0,0,0.2)] sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-2">
           <p className="text-xs font-semibold uppercase tracking-[0.35em] text-[#8eb4c4]">
@@ -56,9 +70,25 @@ export function VisitList({ visits, page, hasNextPage, totalVisits, pageSize }: 
           </div>
         ) : null}
 
-        {items.length === 0 ? (
+        {loadError ? (
+          <div
+            role="alert"
+            className="flex flex-col gap-3 rounded-[24px] border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-5 py-6 text-sm text-[#ffd6d6] shadow-[0_16px_35px_rgba(0,0,0,0.16)] sm:flex-row sm:items-center sm:justify-between"
+          >
+            <span>{loadError}</span>
+            <button
+              type="button"
+              // Um Link para a mesma URL reaproveitaria o cache do roteador; refresh() busca de novo no servidor.
+              onClick={() => startRetry(() => router.refresh())}
+              disabled={isRetrying}
+              className="inline-flex h-10 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/[0.06] px-4 text-sm font-semibold text-white transition hover:bg-white/[0.12] disabled:cursor-wait disabled:opacity-70"
+            >
+              {isRetrying ? 'Tentando...' : 'Tentar novamente'}
+            </button>
+          </div>
+        ) : items.length === 0 ? (
           <div className="rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-7 text-sm text-white/75 shadow-[0_16px_35px_rgba(0,0,0,0.16)]">
-            Nenhuma visita cadastrada ainda.
+            {page > 1 ? 'Não há visitas nesta página.' : 'Nenhuma visita cadastrada ainda.'}
           </div>
         ) : (
           items.map((visit) => (
@@ -145,7 +175,7 @@ export function VisitList({ visits, page, hasNextPage, totalVisits, pageSize }: 
 
       <div className="mt-6 flex flex-col gap-3 rounded-[24px] border border-white/10 bg-white/[0.04] px-5 py-4 text-sm text-[#b6cfd9] shadow-[0_16px_35px_rgba(0,0,0,0.16)] sm:flex-row sm:items-center sm:justify-between">
         <span>
-          Pagina {page}
+          Página {page}
           {visibleTotalVisits !== null
             ? ` de ${Math.max(1, Math.ceil(visibleTotalVisits / pageSize))} · ${visibleTotalVisits} visitas`
             : ''}
@@ -172,7 +202,7 @@ export function VisitList({ visits, page, hasNextPage, totalVisits, pageSize }: 
                 : 'cursor-not-allowed border border-white/10 bg-white/[0.02] text-white/35 pointer-events-none'
             }`}
           >
-            Proxima
+            Próxima
           </Link>
         </div>
       </div>

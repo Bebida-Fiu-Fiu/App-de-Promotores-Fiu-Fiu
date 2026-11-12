@@ -45,7 +45,7 @@ describe('api client', () => {
         method: 'POST',
         token: 'abc',
       })
-    ).rejects.toEqual(expect.objectContaining<ApiError>({
+    ).rejects.toEqual(expect.objectContaining<Partial<ApiError>>({
       message: 'Invalid access token',
       status: 401,
     }));
