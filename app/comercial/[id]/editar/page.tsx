@@ -4,7 +4,8 @@ import { notFound, redirect } from 'next/navigation';
 
 import { CommercialSubmissionForm } from '@/components/commercial/commercial-submission-form';
 import { getSession } from '@/lib/auth';
-import { listAllCommercialVisits, listCommercialVisitsByComercialId } from '@/lib/api/comercial';
+import { getCommercialVisitById } from '@/lib/api/comercial';
+import { toDisplayVisitDate } from '@/lib/commercial-dates';
 
 export default async function EditCommercialSubmissionPage({
   params,
@@ -24,11 +25,7 @@ export default async function EditCommercialSubmissionPage({
     notFound();
   }
 
-  const submissions =
-    typeof session.user.id === 'number'
-      ? await listCommercialVisitsByComercialId(session.accessToken, session.user.id).catch(() => [])
-      : await listAllCommercialVisits(session.accessToken).catch(() => []);
-  const submission = submissions.find((entry) => entry.id === submissionId) ?? null;
+  const submission = await getCommercialVisitById(session.accessToken, submissionId).catch(() => null);
 
   if (!submission) {
     notFound();
@@ -62,7 +59,7 @@ export default async function EditCommercialSubmissionPage({
           }).format(submission.totalValue),
           salesQuantity: submission.salesQuantity,
           sold: submission.sold,
-          visitDates: submission.visitDates.map((visitDate) => ({ value: visitDate })),
+          visitDates: submission.visitDates.map((visitDate) => ({ value: toDisplayVisitDate(visitDate) })),
         }}
       />
     </main>

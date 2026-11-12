@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@/lib/api/client';
+import type { AttendedStore } from '@/types/promotor';
 
 const revalidatePath = vi.fn();
 const clearSession = vi.fn();
@@ -12,6 +13,7 @@ const getPromotorMe = vi.fn();
 const createPromotorVisit = vi.fn();
 const createPromotorAgendaEntry = vi.fn();
 const listPromotorAgendaByPromotorId = vi.fn();
+const updatePromotorAgendaEntry = vi.fn();
 const updatePromotorVisit = vi.fn();
 const deleteDraftVisit = vi.fn();
 const createPromotorMileage = vi.fn();
@@ -47,6 +49,7 @@ vi.mock('@/lib/api/promotor', () => ({
   createPromotorMileage,
   createPromotorAgendaEntry,
   listPromotorAgendaByPromotorId,
+  updatePromotorAgendaEntry,
   createPromotorVisit,
   deleteDraftVisit,
   deletePromotorAgendaEntry,
@@ -63,6 +66,28 @@ vi.mock('@/lib/api/comercial', () => ({
   createCommercialVisit,
   updateCommercialVisit,
 }));
+
+const attendedStore: AttendedStore = {
+  id: '0009',
+  promotorId: '00017',
+  promotorName: 'Promotor Teste',
+  promotorEmail: null,
+  clientId: '00042',
+  clientName: 'Mercado Central',
+  fantasyName: 'Central',
+  city: 'Sao Paulo',
+  state: 'SP',
+  nickname: 'Loja Centro',
+  notes: 'Observacao atual',
+  document: '123456789',
+  address: 'Rua Um',
+  addressNumber: null,
+  neighborhood: 'Centro',
+  daysBetweenVisits: 7,
+  lastVisitDate: null,
+  createdAt: null,
+  updatedAt: null,
+};
 
 describe('actions flows', () => {
   beforeEach(() => {
@@ -147,6 +172,124 @@ describe('actions flows', () => {
     });
   });
 
+  it('patches only changed attended-store fields and returns the API store', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: '00017',
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+    const updatedStore = { ...attendedStore, nickname: 'Loja Nova', daysBetweenVisits: 14 };
+    updatePromotorAgendaEntry.mockResolvedValue(updatedStore);
+
+    const { updateAgendaEntry } = await import('@/lib/actions');
+    const result = await updateAgendaEntry(
+      '0009',
+      { nickname: ' Loja Nova ', daysBetweenVisits: 14 },
+      attendedStore
+    );
+
+    expect(result).toEqual({ success: true, store: updatedStore });
+    expect(updatePromotorAgendaEntry).toHaveBeenCalledWith(
+      'session-token',
+      '0009',
+      { nickname: 'Loja Nova', daysBetweenVisits: 14 },
+      attendedStore
+    );
+    expect(revalidatePath).toHaveBeenCalledWith('/agenda');
+  });
+
+  it('sends null explicitly when unlinking the client and promoter', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: '00017',
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+    updatePromotorAgendaEntry.mockResolvedValue({
+      ...attendedStore,
+      clientId: null,
+      promotorId: null,
+    });
+
+    const { updateAgendaEntry } = await import('@/lib/actions');
+    const result = await updateAgendaEntry(
+      '0009',
+      { clientId: null, promotorId: null },
+      attendedStore
+    );
+
+    expect(result.success).toBe(true);
+    expect(updatePromotorAgendaEntry).toHaveBeenCalledWith(
+      'session-token',
+      '0009',
+      { clientId: null, promotorId: null },
+      attendedStore
+    );
+  });
+
+  it('rejects empty nicknames and invalid frequencies before calling the API', async () => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: '00017',
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+    const { updateAgendaEntry } = await import('@/lib/actions');
+
+    const emptyNickname = await updateAgendaEntry('0009', { nickname: '  ' }, attendedStore);
+    const invalidFrequency = await updateAgendaEntry(
+      '0009',
+      { daysBetweenVisits: 0 },
+      attendedStore
+    );
+
+    expect(emptyNickname).toMatchObject({
+      success: false,
+      error: expect.stringContaining('apelido'),
+    });
+    expect(invalidFrequency).toMatchObject({
+      success: false,
+      error: expect.stringContaining('inteiro positivo'),
+    });
+    expect(updatePromotorAgendaEntry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 'rejeitou as alteracoes'],
+    [404, 'nao foi encontrada'],
+    [409, 'cliente escolhido ja esta vinculado'],
+    [500, 'indisponivel'],
+  ])('shows a clear message for PATCH HTTP %i', async (status, message) => {
+    getSession.mockResolvedValue({
+      accessToken: 'session-token',
+      user: {
+        id: '00017',
+        email: 'comercial@fiu-fiu.com',
+        fullName: 'Equipe Comercial',
+        role: 'comercial',
+      },
+    });
+    updatePromotorAgendaEntry.mockRejectedValue(new ApiError('API failure', status));
+
+    const { updateAgendaEntry } = await import('@/lib/actions');
+    const result = await updateAgendaEntry('0009', { nickname: 'Loja Atualizada' }, attendedStore);
+
+    expect(result).toMatchObject({
+      success: false,
+      error: expect.stringContaining(message),
+    });
+  });
+
   it('stores the exact token returned by login and replaces the session cookies', async () => {
     signInPromotor.mockResolvedValue({
       accessToken: 'Bearer access-token-from-login',
@@ -184,6 +327,46 @@ describe('actions flows', () => {
     expect(clearSession.mock.invocationCallOrder[0]).toBeLessThan(
       createSession.mock.invocationCallOrder[0]
     );
+  });
+
+  it('signUp ignores any role sent by the browser and uses the one from /promotor/me (FIUFIU-33)', async () => {
+    signUpPromotor.mockResolvedValue({
+      accessToken: 'token-signup',
+      user: { id: 11, email: 'novo@fiu-fiu.com', fullName: 'Novo Usuario', role: 'comercial' },
+    });
+    getPromotorMe.mockResolvedValue({ id: 11, email: 'novo@fiu-fiu.com', fullName: 'Novo Usuario', role: 'promotor' });
+
+    const { signUp } = await import('@/lib/actions');
+    const result = await signUp({
+      fullName: 'Novo Usuario',
+      email: 'novo@fiu-fiu.com',
+      password: '123456',
+      confirmPassword: '123456',
+      role: 'comercial',
+    } as Parameters<typeof signUp>[0]);
+
+    expect(result).toEqual({ success: true, homePath: '/checkin' });
+    expect(signUpPromotor.mock.calls[0][0]).not.toHaveProperty('role');
+    expect(createSession).toHaveBeenCalledWith({
+      accessToken: 'token-signup',
+      user: expect.objectContaining({ role: 'promotor' }),
+    });
+  });
+
+  it('login falls back to the least privileged role when /promotor/me fails', async () => {
+    signInPromotor.mockResolvedValue({
+      accessToken: 'token-login',
+      user: { id: 12, email: 'x@fiu-fiu.com', fullName: 'X', role: 'comercial' },
+    });
+    getPromotorMe.mockRejectedValue(new ApiError('down', 503));
+
+    const { login } = await import('@/lib/actions');
+    await login({ email: 'x@fiu-fiu.com', password: '123456' });
+
+    expect(createSession).toHaveBeenCalledWith({
+      accessToken: 'token-login',
+      user: expect.objectContaining({ role: 'promotor' }),
+    });
   });
 
   it('creates a visit with the current session token and normalized payload', async () => {
@@ -233,7 +416,7 @@ describe('actions flows', () => {
     expect(revalidatePath).toHaveBeenCalledWith('/visitas/nova');
   });
 
-  it('creates a store agenda with the selected promoter and custom frequency', async () => {
+  it('creates a store agenda assigned to the logged-in user with custom frequency', async () => {
     getSession.mockResolvedValue({
       accessToken: 'session-token',
       user: {
@@ -247,7 +430,6 @@ describe('actions flows', () => {
     const { createAgendaEntry } = await import('@/lib/actions');
     const result = await createAgendaEntry({
       clientId: '00042',
-      promotorId: '0017',
       nickname: 'Loja Centro',
       daysBetweenVisits: 14,
     });
@@ -255,7 +437,7 @@ describe('actions flows', () => {
     expect(result).toEqual({ success: true });
     expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
       clientId: '00042',
-      promotorId: '0017',
+      promotorId: 20,
       nickname: 'Loja Centro',
       daysBetweenVisits: 14,
     });
@@ -276,20 +458,19 @@ describe('actions flows', () => {
     const { createAgendaEntry } = await import('@/lib/actions');
     const result = await createAgendaEntry({
       clientId: '00042',
-      promotorId: '0017',
       nickname: 'Loja Centro',
     });
 
     expect(result).toEqual({ success: true });
     expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
       clientId: '00042',
-      promotorId: '0017',
+      promotorId: 20,
       nickname: 'Loja Centro',
       daysBetweenVisits: 7,
     });
   });
 
-  it('creates an attended store using only its required nickname', async () => {
+  it('creates an attended store using its nickname and the logged-in promoter', async () => {
     getSession.mockResolvedValue({
       accessToken: 'session-token',
       user: {
@@ -307,10 +488,11 @@ describe('actions flows', () => {
     expect(createPromotorAgendaEntry).toHaveBeenCalledWith('session-token', {
       nickname: 'Loja sem vinculos',
       daysBetweenVisits: 7,
+      promotorId: 20,
     });
   });
 
-  it('allows linking a client without assigning a promoter', async () => {
+  it('allows linking a client while assigning the logged-in promoter', async () => {
     getSession.mockResolvedValue({
       accessToken: 'session-token',
       user: {
@@ -333,6 +515,7 @@ describe('actions flows', () => {
       clientId: '00042',
       nickname: 'Loja sem promotor',
       daysBetweenVisits: 14,
+      promotorId: 20,
     });
   });
 
@@ -351,7 +534,7 @@ describe('actions flows', () => {
     const { createAgendaEntry } = await import('@/lib/actions');
     const result = await createAgendaEntry({
       clientId: '00042',
-      promotorId: '0017',
+      promotorId: 21,
       nickname: 'Loja Centro',
       daysBetweenVisits: 7,
     });
@@ -394,7 +577,6 @@ describe('actions flows', () => {
     const { createAgendaEntry } = await import('@/lib/actions');
     const result = await createAgendaEntry({
       clientId: '00042',
-      promotorId: '0017',
       nickname: 'Loja Centro',
       daysBetweenVisits: 2.5,
     });

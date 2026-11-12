@@ -20,5 +20,5 @@ export default async function PromotorHomePage({ searchParams }: PromotorHomePag
   const pageValue = Number(resolvedSearchParams?.page);
   const page = Number.isFinite(pageValue) && pageValue > 0 ? Math.floor(pageValue) : 1;
 
-  return <HomePageContent accessToken={session.accessToken} user={session.user} page={page} />;
+  return <HomePageContent session={session} page={page} />;
 }

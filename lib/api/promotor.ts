@@ -18,7 +18,6 @@ type PromotorAuthPayload = {
   fullName?: string;
   email: string;
   password: string;
-  role?: 'promotor' | 'comercial';
 };
 
 type AuthResult = {
@@ -226,7 +225,8 @@ function normalizeUser(payload: unknown): SessionUser {
   const embeddedPayload =
     isRecord(payload) ? parseEmbeddedJsonString(payload.message) : null;
   const source = embeddedPayload ?? payload;
-  const record = readNestedRecord(source, ['user', 'data']) ?? {};
+  // GET /promotor/me responde { promotor: {...} }; o login antigo usava { user } ou { data }.
+  const record = readNestedRecord(source, ['promotor', 'user', 'data']) ?? {};
 
   return {
     id: toOpaqueId(record.id ?? record.promotorId ?? record.userId),
@@ -647,7 +647,6 @@ export async function signUpPromotor(payload: PromotorAuthPayload) {
       full_name: payload.fullName,
       email: payload.email,
       password: payload.password,
-      role: payload.role,
     },
   });
 
@@ -754,10 +753,67 @@ export async function createPromotorAgendaEntry(
     daysBetweenVisits: number;
   }
 ) {
-  return apiRequest('/promotor/agenda', {
+  return apiRequest('/promotors/agenda', {
     method: 'POST',
     token,
     body: payload,
+  });
+}
+
+export type AttendedStorePatch = {
+  nickname?: string;
+  clientId?: OpaqueId | null;
+  promotorId?: OpaqueId | null;
+  daysBetweenVisits?: number;
+  notes?: string | null;
+};
+
+export async function updatePromotorAgendaEntry(
+  token: string,
+  attendedStoreId: OpaqueId,
+  patch: AttendedStorePatch,
+  currentStore: AttendedStore
+) {
+  const response = await apiRequest(
+    `/promotor/agenda/${encodeURIComponent(String(attendedStoreId))}`,
+    {
+      method: 'PATCH',
+      token,
+      body: patch,
+    }
+  );
+  const updatedStore =
+    readNestedRecord(response, ['attendedStore', 'attended_store', 'store', 'agenda', 'data']) ??
+    response;
+
+  if (!isRecord(updatedStore)) {
+    return null;
+  }
+
+  const responseFields = { ...updatedStore };
+  const aliases = [
+    ['promotorId', 'promotor_id'],
+    ['promotorName', 'promotor_name'],
+    ['promotorEmail', 'promotor_email'],
+    ['clientId', 'client_id'],
+    ['clientName', 'client_name'],
+    ['fantasyName', 'fantasy_name'],
+    ['addressNumber', 'address_number'],
+    ['daysBetweenVisits', 'days_between_visits'],
+    ['lastVisitDate', 'last_visit_date'],
+    ['createdAt', 'created_at'],
+    ['updatedAt', 'updated_at'],
+  ] as const;
+  for (const [camelCase, snakeCase] of aliases) {
+    if (!(camelCase in responseFields) && snakeCase in responseFields) {
+      responseFields[camelCase] = responseFields[snakeCase];
+    }
+  }
+
+  return normalizeAgendaEntry({
+    ...currentStore,
+    ...patch,
+    ...responseFields,
   });
 }
 

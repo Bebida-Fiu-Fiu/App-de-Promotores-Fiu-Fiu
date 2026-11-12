@@ -15,10 +15,11 @@ The backend provides a complete password recovery system **exclusively for promo
 
 ## Integration Points
 
-### Current Status (as of June 2026)
+### Current Status (as of November 2026)
 - ✅ Generic forgot password flow implemented at `/forgot-password` and integrated in `/login`
 - ✅ Backend endpoints tested and working
-- 🔄 Promoter-specific integration in progress at `/promotor/signin`
+- ✅ Promoter login at `/promotor/signin` (`components/auth/promoter-login-form.tsx`) reuses `ForgotPasswordForm`
+- ⚠️ `lib/forgot-password-flow.tsx` is an unused older version of the flow — do not extend it; see `docs/MELHORIAS.md`
 
 ### Promoter-Specific Endpoints (Same Backend URLs)
 All password recovery endpoints are shared (not promoter-specific in URL):
@@ -78,14 +79,14 @@ app/
 │   └── page.tsx (generic login for all users)
 ├── promotor/
 │   └── signin/
-│       └── page.tsx (promoter-specific login - IN PROGRESS)
+│       └── page.tsx (promoter-specific login - DONE)
 └── forgot-password/
     └── page.tsx (generic forgot password)
 
 components/auth/
 ├── login-form.tsx (generic, now has forgot password option)
 ├── forgot-password-form.tsx (reusable, works for all users)
-└── promoter-login-form.tsx (TODO: create if promoter-specific UI needed)
+└── promoter-login-form.tsx (promoter login, reuses forgot-password-form)
 
 lib/
 ├── actions.ts (server actions for auth flow)

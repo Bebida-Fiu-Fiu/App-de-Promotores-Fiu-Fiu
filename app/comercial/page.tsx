@@ -4,7 +4,6 @@ import { redirect } from 'next/navigation';
 import { Header } from '@/components/home/header';
 import { getSession } from '@/lib/auth';
 import { listAllCommercialVisits } from '@/lib/api/comercial';
-import { getHeaderFullName } from '@/lib/header-user';
 
 function formatCurrency(value: number) {
   return new Intl.NumberFormat('pt-BR', {
@@ -24,7 +23,6 @@ export default async function ComercialHomePage({
     redirect('/login');
   }
 
-  const fullName = await getHeaderFullName(session.accessToken, session.user.fullName);
 
   const resolvedSearchParams = searchParams ? await searchParams : undefined;
   const query = resolvedSearchParams?.q?.trim() ?? '';
@@ -51,7 +49,7 @@ export default async function ComercialHomePage({
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top,_rgba(0,156,108,0.12),_transparent_28%),linear-gradient(180deg,_#0f2d3d_0%,_var(--background)_46%,_#091c27_100%)]">
-      <Header fullName={fullName} />
+      <Header />
 
       <section className="mx-auto w-full max-w-6xl px-4 pb-12 pt-24">
         <div className="flex flex-col gap-4 rounded-[2rem] border border-white/10 bg-white/6 p-6 shadow-2xl shadow-black/20 backdrop-blur md:flex-row md:items-end md:justify-between md:p-8">

@@ -1,199 +1,105 @@
 # App de Promotores Fiu Fiu
 
-Aplicativo web para promotores registrarem visitas em estabelecimentos e acompanharem produtos e datas de validade.
+PWA para promotores e comerciais da Fiu Fiu registrarem visitas em lojas, controlarem a agenda de lojas atendidas e informarem a quilometragem semanal do veículo.
 
-## Visao Geral
+> Para regras de código e arquitetura, veja [AGENTS.md](AGENTS.md). Para débitos e próximos passos, veja [docs/MELHORIAS.md](docs/MELHORIAS.md).
 
-O projeto foi construido com `Next.js 16`, `React 19`, `TypeScript` e `PostgreSQL` via `@neondatabase/serverless`.
+## Stack
 
-Fluxo principal:
+- Next.js 16 (App Router, Server Actions), React 19, TypeScript strict
+- Tailwind CSS 4, lucide-react
+- React Hook Form + Zod
+- Vitest + jsdom
+- Backend: `fiu-fiu-api` (Serverless/AWS Lambda, repositório separado)
 
-- cadastro e login de promotores
-- listagem das visitas do promotor autenticado
-- busca de estabelecimentos por filtros
-- cadastro de visita com produtos, quantidade, unidade e validade
-- visualizacao dos detalhes de uma visita
-- suporte basico a PWA
+## Arquitetura em uma frase
 
-## Tecnologias
+O Next roda no servidor como **BFF**: as páginas e Server Actions leem a sessão dos cookies, chamam a `fiu-fiu-api` com o token do usuário e normalizam as respostas. O navegador só fala com o Next e, no upload de fotos, com URLs S3 pré-assinadas.
 
-- `Next.js 16`
-- `React 19`
-- `TypeScript`
-- `Tailwind CSS 4`
-- `React Hook Form`
-- `Zod`
-- `PostgreSQL / Neon`
-- `bcrypt` para hash de senha
+## Funcionalidades
+
+| Perfil | Rota | O que faz |
+| --- | --- | --- |
+| todos | `/login`, `/promotor/signin`, `/signup`, `/forgot-password` | Login, cadastro e recuperação de senha em 3 etapas (e-mail → código de 6 dígitos → nova senha) |
+| promotor | `/checkin` | Registro semanal de quilometragem com foto (semana de domingo a sábado, fuso de São Paulo). Pulado se já houver registro na semana. |
+| promotor | `/promotor` | Lista paginada das visitas |
+| promotor | `/visitas/nova`, `/visitas/[id]`, `/visitas/[id]/editar` | Cadastro de visita com produtos, validade, observação e fotos antes/depois. Suporta rascunho, cópia do resumo e exclusão de rascunho. |
+| ambos | `/agenda`, `/agenda/novo` | Lojas atendidas com frequência de visita e status (em dia, prazo próximo, vencido, primeira visita). O comercial vê todos os promotores e pode editar. |
+| comercial | `/comercial`, `/comercial/novo`, `/comercial/[id]`, `/comercial/[id]/editar` | Cadastro e relatório de clientes comerciais |
+
+Depois do login, o promotor vai para `/checkin` e o comercial para `/comercial` (`getAppEntryPath` em `lib/auth.ts`).
 
 ## Estrutura
 
 ```text
-app/
-  login/               Tela de login
-  signup/              Tela de cadastro
-  visitas/nova/        Cadastro de visita
-  visitas/[id]/        Detalhes da visita
-components/
-  auth/                Formularios de autenticacao
-  home/                Header e lista de visitas
-  visits/              Formulario de nova visita
-lib/
-  actions.ts           Server Actions do app
-  auth.ts              Sessao via cookie httpOnly
-  db.ts                Conexao com PostgreSQL
-database/
-  create_promotors_table.sql
-  add_promotor_id_to_visits.sql
+app/                    Rotas (Server Components) e Route Handlers em app/api/
+components/             UI por domínio: auth, home, agenda, visits, commercial, pwa
+lib/actions.ts          Server Actions
+lib/api/                Cliente HTTP da fiu-fiu-api e normalizadores (promotor, comercial)
+lib/auth.ts             Sessão em cookies httpOnly
+lib/*.ts                Regras de domínio (agenda, imagens, quilometragem, cópia de visita)
+types/                  Tipos compartilhados
+tests/                  Testes Vitest (espelham lib/ e components/) e tests/e2e/ (Playwright)
+database/               SQL histórico (o schema atual vive na fiu-fiu-api)
+public/                 Ícones, logo e texturas
 ```
 
-## Requisitos
+## Configuração
 
-- `Node.js` 20 ou superior
-- `npm`
-- acesso a um banco PostgreSQL
-
-## Configuracao
-
-1. Instale as dependencias:
+Requisitos: Node.js 20+ e npm.
 
 ```bash
 npm install
-```
-
-2. Crie o arquivo `.env` com base no exemplo:
-
-```bash
 cp .env.example .env
 ```
 
-3. Configure a variavel de ambiente:
+Variáveis:
 
 ```env
+# URL da fiu-fiu-api (obrigatória). FIU_FIU_API_BASE_URL tem prioridade sobre BASE_URL.
+BASE_URL="https://api.fiu-fiu.com"
+
+# Postgres. Ainda obrigatório porque lib/db.ts é carregado pelas Server Actions
+# (busca geral de clientes e fallbacks de usuário). Ver docs/MELHORIAS.md, item 10.
 DATABASE_URL="postgresql://user:password@host:port/database?sslmode=require"
 ```
 
-## Banco de Dados
+`OPENAI_API_KEY` e `OPENAI_VISIT_MODEL` aparecem no `.env.example`, mas não são usadas hoje.
 
-O projeto usa PostgreSQL e depende das tabelas de autenticacao e visitas.
+## Scripts
 
-Scripts incluidos no repositorio:
+| Comando | Descrição |
+| --- | --- |
+| `npm run dev` | Desenvolvimento em http://localhost:3001 |
+| `npm run build` / `npm run start` | Build e servidor de produção |
+| `npm run lint` | ESLint |
+| `npm test` | Testes (Vitest) |
+| `npm run test:watch` | Testes em modo watch |
+| `npm run test:coverage` | Cobertura de `lib/` |
+| `npm run typecheck` | Typecheck (`tsc --noEmit`) |
+| `npm run test:e2e` | Testes de navegador (Playwright) com a API simulada, servidor em modo dev |
+| `npm run test:e2e:prod` | Os mesmos testes contra o build de produção (faz o build antes) |
+| `npm run verify` | Typecheck, lint, testes unitários e testes de navegador no build de produção: o mesmo que o CI |
 
-- `database/create_promotors_table.sql`: cria a tabela `promotors`
-- `database/add_promotor_id_to_visits.sql`: adiciona `promotor_id` em `visits`
-- `database/create_commercial_submissions_table.sql`: cria a tabela `commercial_submissions` no mesmo banco do app
+Antes de abrir PR: `npm run verify`.
 
-Observacoes importantes:
+## Testes automáticos
 
-- a tabela `visits` ja precisa existir no banco
-- a busca de estabelecimentos depende da tabela `clients`
-- o formulario de visitas espera que `visits` tenha, no minimo, as colunas `id`, `promotor_id`, `establishment`, `visit_date` e `products`
-- a tabela `clients` precisa conter os campos usados na busca, como `client_name`, `fantasy_name`, `document`, `city`, `address`, `address_number`, `neighborhood` e `state`
-- o formulario do comercial grava na tabela `commercial_submissions` no mesmo banco usado pelos demais usuarios
+Todo push e pull request roda o workflow [CI](.github/workflows/ci.yml) no GitHub Actions: typecheck, lint, testes unitários, build e testes de navegador. Se algo falhar, o relatório do Playwright (com screenshots e trace) fica disponível como artefato da execução.
 
-Exemplo de ordem de execucao:
+Os testes de navegador (`tests/e2e/`) sobem sozinhos uma API simulada (`tests/e2e/mock-api.mjs`, só dados fictícios) e o app na porta 3101, então não interferem no `npm run dev` da porta 3001 e nunca usam a API real. Na primeira vez, instale o navegador: `npx playwright install chromium`.
 
-1. execute `database/create_promotors_table.sql`
-2. garanta que a tabela `visits` ja exista
-3. execute `database/add_promotor_id_to_visits.sql`
-4. execute `database/create_commercial_submissions_table.sql`
+## Autenticação
 
-## Como Rodar
-
-Ambiente de desenvolvimento:
-
-```bash
-npm run dev
-```
-
-Build de producao:
-
-```bash
-npm run build
-npm run start
-```
-
-Lint:
-
-```bash
-npm run lint
-```
-
-## Scripts Disponiveis
-
-- `npm run dev`: inicia o app em desenvolvimento
-- `npm run build`: gera o build de producao
-- `npm run start`: sobe a aplicacao em modo producao
-- `npm run lint`: valida o codigo com ESLint
-
-## Autenticacao
-
-O fluxo de autenticacao atual funciona assim:
-
-- o cadastro salva a senha com hash `bcrypt`
-- o login valida a senha com `bcrypt`
-- contas antigas com senha em texto puro sao migradas automaticamente no primeiro login
-- a sessao e mantida por cookie `httpOnly` chamado `ff_session`
-
-Limitacao atual:
-
-- o cookie de sessao guarda o email do usuario, sem assinatura criptografica via JWT
-
-Se o projeto evoluir em seguranca, um proximo passo recomendado e trocar a sessao atual por cookie assinado ou token de sessao no servidor.
-
-## Funcionalidades
-
-### Cadastro e login
-
-- cadastro de promotores com nome, email e senha
-- validacao de formulario no cliente e no servidor
-- redirecionamento para a home apos autenticacao
-
-### Home
-
-- carrega o nome do promotor autenticado
-- lista as visitas vinculadas ao promotor logado
-
-### Cadastro de visita
-
-- busca de estabelecimento por filtros
-- selecao de cliente encontrado
-- definicao da data da visita
-- cadastro de um ou mais produtos
-- armazenamento dos produtos em `jsonb`
-
-### Detalhe da visita
-
-- exibe estabelecimento e data
-- exibe todos os produtos cadastrados na visita
+- Login e cadastro chamam `POST /promotor/signin` e `POST /promotor/signup` na API. Hash de senha e emissão do JWT ficam no backend.
+- O frontend guarda o JWT e os dados do usuário em cookies httpOnly (`ff_access_token`, `ff_user`, `ff_role`) por 7 dias. A sessão é descartada quando o `exp` do JWT vence.
+- Se a API responder 401, a action limpa a sessão e devolve `shouldRedirectToLogin: true`.
+- Recuperação de senha: `POST /password-recovery/{request,verify,reset}`. O código vale 15 minutos e o reenvio libera após 30 segundos.
 
 ## PWA
 
-O projeto possui estrutura basica de PWA:
+Manifesto em `app/manifest.ts` e registro do service worker em `components/pwa/pwa-register.tsx`, só em produção. Hoje o `/sw.js` não é gerado no build (ver `docs/MELHORIAS.md`, item 7).
 
-- `app/manifest.ts`
-- registro de service worker em `components/pwa/pwa-register.tsx`
+## Estado atual
 
-## Validacao
-
-Validacoes importantes do app:
-
-- autenticacao com `Zod`
-- busca de clientes com sanitizacao de documento
-- data de visita no formato `dd/mm/aaaa`
-- produtos com quantidade minima e unidade controlada
-
-## Melhorias Recomendadas
-
-- assinar a sessao com JWT ou trocar para sessao server-side
-- adicionar migrations versionadas
-- documentar o schema completo de `visits` e `clients`
-- adicionar testes para login, cadastro e criacao de visitas
-- padronizar mensagens de erro em portugues no backend
-
-## Status
-
-Estado atual validado localmente:
-
-- `npm run lint` passando
-- `npm run build` passando
+Veja a seção "Estado na data" em [docs/MELHORIAS.md](docs/MELHORIAS.md).

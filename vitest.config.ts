@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import path from 'node:path';
 
 export default defineConfig({
@@ -7,6 +7,8 @@ export default defineConfig({
     globals: true,
     clearMocks: true,
     restoreMocks: true,
+    // tests/e2e é do Playwright (npm run test:e2e).
+    exclude: [...configDefaults.exclude, 'tests/e2e/**'],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],
