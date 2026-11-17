@@ -131,6 +131,7 @@ export default async function EditVisitPage({
         visitId={Number(id)}
         isDraft={visit.isDraft}
         userFullName={userFullName}
+        localDraftOwner={session.user.email}
         initialData={{
           establishmentLabel: visit.establishmentLabel,
           establishmentId: visit.establishmentId,

@@ -18,11 +18,22 @@ import { useFieldArray, useForm, useWatch } from 'react-hook-form';
 import { z } from 'zod';
 
 import { DeleteDraftButton } from '@/components/visits/delete-draft-button';
+import { useUnsavedChangesWarning } from '@/components/visits/use-unsaved-changes-warning';
+import { VisitRecoveryBanner } from '@/components/visits/visit-recovery-banner';
 import { formatVisitCopyText } from '@/lib/visit-copy';
 import { VisitImageLightbox } from '@/components/visits/visit-image-lightbox';
 import { VisitSuccessDialog } from '@/components/visits/visit-success-dialog';
 import { createVisit, getSessionHomePath, saveVisitDraft, searchClients } from '@/lib/actions';
 import { isAcceptedImageFile, mapFilesToUploadPayload, optimizeVisitImageFile } from '@/lib/file-utils';
+import { UNSAVED_VISIT_CHANGES_MESSAGE } from '@/lib/unsaved-changes';
+import {
+  createDebouncedTask,
+  createVisitFormStorage,
+  getVisitFormStorageKey,
+  type DebouncedTask,
+  type StoredVisitFormSnapshot,
+  type VisitFormStorage,
+} from '@/lib/visit-form-storage';
 import type { OpaqueId, PromotorVisitImageArrayInput, PromotorVisitProduct } from '@/types/promotor';
 
 const PRODUCT_OPTIONS = [
@@ -47,6 +58,7 @@ const PRODUCT_OPTIONS = [
 const INDEFINITE_EXPIRATION_LABEL = 'indefinido';
 const MAX_IMAGES_PER_CATEGORY = 5;
 const MAX_IMAGE_SIZE_IN_BYTES = 10 * 1024 * 1024;
+const LOCAL_AUTOSAVE_DELAY_MS = 800;
 
 const INDEFINITE_EXPIRATION_PRODUCTS = new Set(
   [
@@ -158,7 +170,13 @@ type NewVisitFormProps = {
     afterImages?: string[];
   };
   initialClient?: InitialClientData | null;
+  /** Identifica o usuario no aparelho (e-mail), para separar as copias locais de cada um. */
+  localDraftOwner?: string | null;
 };
+
+type LocalVisitSnapshot = StoredVisitFormSnapshot<VisitFormInput, ClientSearchResult>;
+
+type LocalRecoveryState = 'checking' | 'prompt' | 'ready';
 
 function formatDateInput(value: string) {
   const digits = value.replace(/\D/g, '').slice(0, 8);
@@ -341,6 +359,16 @@ function createImageState(previewUrl: string, existingValue: string | null, file
     existingValue,
     file,
   };
+}
+
+function buildGalleryFromSnapshot(images: LocalVisitSnapshot['beforeImages']): VisitImageGalleryState {
+  return images.flatMap((image): VisitImageGalleryState => {
+    if (image.file) {
+      return [{ id: image.id, previewUrl: URL.createObjectURL(image.file), existingValue: image.existingValue, file: image.file }];
+    }
+
+    return image.existingValue ? [{ id: image.id, previewUrl: image.existingValue, existingValue: image.existingValue, file: null }] : [];
+  });
 }
 
 function buildInitialGalleryState(images: string[] | undefined) {
@@ -675,6 +703,7 @@ export function NewVisitForm({
   userFullName,
   initialData,
   initialClient = null,
+  localDraftOwner = null,
 }: NewVisitFormProps) {
   const router = useRouter();
   const visitDatePickerRef = useRef<HTMLInputElement | null>(null);
@@ -726,6 +755,8 @@ export function NewVisitForm({
     handleSubmit,
     reset,
     setValue,
+    getValues,
+    subscribe,
     formState: { errors, isSubmitting },
   } = useForm<VisitFormInput, unknown, VisitFormValues>({
     resolver: zodResolver(visitFormSchema),
@@ -816,6 +847,165 @@ export function NewVisitForm({
   const handleAfterImagesChange = (nextImages: VisitImageGalleryState) => {
     syncGalleryState(setAfterImages, nextImages);
   };
+
+  // --- Copia local do formulario (IndexedDB) ---------------------------------
+  const localCopyKey = getVisitFormStorageKey(localDraftOwner, visitId);
+  const localCopyStorageRef = useRef<VisitFormStorage | null>(null);
+  const localAutosaveRef = useRef<DebouncedTask | null>(null);
+  const selectedClientRef = useRef<ClientSearchResult | null>(selectedClient);
+  const [localRecoveryState, setLocalRecoveryState] = useState<LocalRecoveryState>('checking');
+  const [localSnapshot, setLocalSnapshot] = useState<LocalVisitSnapshot | null>(null);
+  const [isResolvingLocalSnapshot, setIsResolvingLocalSnapshot] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [localChangeVersion, setLocalChangeVersion] = useState(0);
+  // Ajustes que o proprio formulario faz ao montar (ex.: validade "indefinido") nao sao
+  // alteracoes do promotor; so contamos mudancas depois de checar a copia local.
+  const isTrackingChangesRef = useRef(false);
+
+  useUnsavedChangesWarning(hasUnsavedChanges, UNSAVED_VISIT_CHANGES_MESSAGE);
+
+  useEffect(() => {
+    selectedClientRef.current = selectedClient;
+  }, [selectedClient]);
+
+  const markUserChange = () => {
+    setHasUnsavedChanges(true);
+    setLocalChangeVersion((current) => current + 1);
+  };
+
+  useEffect(() => {
+    // `name` so vem preenchido em mudancas de campo (digitacao, setValue, append/remove);
+    // um `reset` (restaurar copia ou limpar apos envio) nao conta como alteracao.
+    return subscribe({
+      formState: { values: true },
+      callback: ({ name }) => {
+        if (name && isTrackingChangesRef.current) {
+          setHasUnsavedChanges(true);
+          setLocalChangeVersion((current) => current + 1);
+        }
+      },
+    });
+  }, [subscribe]);
+
+  useEffect(() => {
+    const storage = createVisitFormStorage();
+    const autosave = createDebouncedTask(async () => {
+      try {
+        await storage.save<VisitFormInput, ClientSearchResult>(localCopyKey, {
+          values: getValues(),
+          selectedClient: selectedClientRef.current,
+          beforeImages: beforeImagesRef.current,
+          afterImages: afterImagesRef.current,
+        });
+      } catch (error) {
+        console.warn('Nao foi possivel salvar a visita neste aparelho.', error);
+      }
+    }, LOCAL_AUTOSAVE_DELAY_MS);
+    let isActive = true;
+
+    localCopyStorageRef.current = storage;
+    localAutosaveRef.current = autosave;
+
+    storage
+      .load<VisitFormInput, ClientSearchResult>(localCopyKey)
+      .catch((error) => {
+        console.warn('Nao foi possivel ler a visita salva neste aparelho.', error);
+        return null;
+      })
+      .then((snapshot) => {
+        if (!isActive) {
+          return;
+        }
+
+        isTrackingChangesRef.current = true;
+        setLocalSnapshot(snapshot);
+        setLocalRecoveryState(snapshot ? 'prompt' : 'ready');
+      });
+
+    // Fechar a aba ou trocar de app no celular: grava ja o que estiver pendente.
+    const flushPendingSave = () => {
+      if (document.visibilityState === 'hidden') {
+        void autosave.flush();
+      }
+    };
+    const handlePageHide = () => {
+      void autosave.flush();
+    };
+
+    document.addEventListener('visibilitychange', flushPendingSave);
+    window.addEventListener('pagehide', handlePageHide);
+
+    return () => {
+      isActive = false;
+      isTrackingChangesRef.current = false;
+      document.removeEventListener('visibilitychange', flushPendingSave);
+      window.removeEventListener('pagehide', handlePageHide);
+      void autosave.flush();
+      localAutosaveRef.current = null;
+    };
+  }, [getValues, localCopyKey]);
+
+  useEffect(() => {
+    // Enquanto a pergunta "continuar ou descartar" estiver aberta, nao sobrescreve a copia antiga.
+    if (localRecoveryState !== 'ready' || !hasUnsavedChanges || localChangeVersion === 0) {
+      return;
+    }
+
+    localAutosaveRef.current?.schedule();
+  }, [hasUnsavedChanges, localChangeVersion, localRecoveryState]);
+
+  const discardLocalCopy = async () => {
+    localAutosaveRef.current?.cancel();
+    setHasUnsavedChanges(false);
+
+    try {
+      await localCopyStorageRef.current?.clear(localCopyKey);
+    } catch (error) {
+      console.warn('Nao foi possivel limpar a visita salva neste aparelho.', error);
+    }
+  };
+
+  const handleRestoreLocalSnapshot = () => {
+    if (!localSnapshot) {
+      setLocalRecoveryState('ready');
+      return;
+    }
+
+    reset(localSnapshot.values);
+    setSelectedClient(localSnapshot.selectedClient);
+    handleBeforeImagesChange(buildGalleryFromSnapshot(localSnapshot.beforeImages));
+    handleAfterImagesChange(buildGalleryFromSnapshot(localSnapshot.afterImages));
+    setLocalSnapshot(null);
+    setLocalRecoveryState('ready');
+    // O conteudo restaurado ainda nao foi enviado ao servidor.
+    setHasUnsavedChanges(true);
+  };
+
+  const handleDiscardLocalSnapshot = async () => {
+    setIsResolvingLocalSnapshot(true);
+    localAutosaveRef.current?.cancel();
+
+    try {
+      await localCopyStorageRef.current?.clear(localCopyKey);
+    } catch (error) {
+      console.warn('Nao foi possivel descartar a visita salva neste aparelho.', error);
+    }
+
+    setIsResolvingLocalSnapshot(false);
+    setLocalSnapshot(null);
+    setLocalRecoveryState('ready');
+  };
+
+  const handleUserBeforeImagesChange = (nextImages: VisitImageGalleryState) => {
+    handleBeforeImagesChange(nextImages);
+    markUserChange();
+  };
+
+  const handleUserAfterImagesChange = (nextImages: VisitImageGalleryState) => {
+    handleAfterImagesChange(nextImages);
+    markUserChange();
+  };
+  // ---------------------------------------------------------------------------
 
   useEffect(() => {
     watchedProducts?.forEach((product, index) => {
@@ -1033,6 +1223,9 @@ export function NewVisitForm({
         return;
       }
 
+      // Enviado ao servidor: a copia local nao e mais necessaria.
+      await discardLocalCopy();
+
       const successCopy =
         mode === 'draft' ? 'Rascunho salvo com sucesso.' : 'Visita salva com sucesso.';
       setSuccessMessage(successCopy);
@@ -1098,6 +1291,21 @@ export function NewVisitForm({
             Preencha os dados abaixo para salvar a visita do promotor como rascunho ou envio final.
           </p>
         </div>
+
+        {localRecoveryState === 'prompt' && localSnapshot && (
+          <VisitRecoveryBanner
+            savedAt={localSnapshot.savedAt}
+            photoCount={
+              localSnapshot.beforeImages.filter((image) => image.file).length +
+              localSnapshot.afterImages.filter((image) => image.file).length
+            }
+            isBusy={isResolvingLocalSnapshot}
+            onRestore={handleRestoreLocalSnapshot}
+            onDiscard={() => {
+              void handleDiscardLocalSnapshot();
+            }}
+          />
+        )}
 
         <form
           onSubmit={handleSubmit((values) => onSubmit(values, submitMode ?? 'final'))}
@@ -1409,14 +1617,14 @@ export function NewVisitForm({
               label="Antes"
               helperText="Selecione zero, uma ou varias fotos do ambiente antes da visita."
               images={beforeImages}
-              onChange={handleBeforeImagesChange}
+              onChange={handleUserBeforeImagesChange}
             />
             <VisitImageGalleryField
               idPrefix="after-images"
               label="Depois"
               helperText="Selecione zero, uma ou varias fotos do ambiente depois da visita."
               images={afterImages}
-              onChange={handleAfterImagesChange}
+              onChange={handleUserAfterImagesChange}
             />
           </div>
 
@@ -1540,7 +1748,7 @@ export function NewVisitForm({
                             type="button"
                             disabled={usesIndefiniteExpiration}
                             onClick={() => {
-                              const picker = document.getElementById(`product-expiration-${field.id}`) as HTMLInputElement | null;
+                              const picker = document.getElementById(`product-expiration-${index}`) as HTMLInputElement | null;
                               picker?.showPicker?.();
                             }}
                             className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-[#0f2d3d] transition hover:bg-[#0f2d3d]/8 disabled:cursor-not-allowed disabled:opacity-40"
@@ -1549,7 +1757,7 @@ export function NewVisitForm({
                             <CalendarDays size={18} />
                           </button>
                           <input
-                            id={`product-expiration-${field.id}`}
+                            id={`product-expiration-${index}`}
                             type="date"
                             tabIndex={-1}
                             className="pointer-events-none absolute h-0 w-0 opacity-0"
@@ -1620,6 +1828,9 @@ export function NewVisitForm({
               <DeleteDraftButton
                 visitId={visitId}
                 redirectTo={homePath}
+                onDeleted={() => {
+                  void discardLocalCopy();
+                }}
                 className="rounded-xl border border-[#ff8c8c]/30 bg-[#5c1f1f]/35 px-4 py-3 text-sm font-semibold text-[#ffd6d6] transition hover:bg-[#6f2626]/45"
               />
             )}

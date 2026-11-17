@@ -46,6 +46,8 @@ npm run verify         # tudo acima, na ordem do CI (e2e no build de produção)
 | `lib/auth.ts` | Sessão em cookies httpOnly (`ff_access_token`, `ff_user`, `ff_role`, `ff_session`), helpers de rota por perfil e de ID do promotor. |
 | `lib/agenda-frequency.ts` | Regras de status da agenda (em dia / prazo próximo / vencido / primeira visita). Coberto por testes. |
 | `lib/file-utils.ts` | Validação e compressão de imagens no cliente. |
+| `lib/visit-form-storage.ts` | Cópia local (IndexedDB) do formulário de visita, com fotos ainda não enviadas. Coberto por testes. |
+| `lib/unsaved-changes.ts` | Regra de quando um clique em link tira o usuário do formulário (aviso de alterações não enviadas). |
 | `lib/weekly-vehicle-check*.ts` | Janela semanal (fuso `America/Sao_Paulo`) e checagem de quilometragem. |
 | `types/` | Tipos de domínio compartilhados (`auth`, `promotor`, `comercial`). |
 | `tests/` | Vitest; espelha `lib/` e `components/`. `tests/stubs/server-only.ts` substitui o pacote `server-only`. |
@@ -87,6 +89,7 @@ npm run verify         # tudo acima, na ordem do CI (e2e no build de produção)
 
 - **Validade "indefinido"**: produtos `Cajazinha`, `Abacaxi Cortelã`, `Tangerina com Acerola`, `Pomar`, `Pitaya com Melancia`, ou qualquer produto com quantidade 0, usam validade `indefinido`. Nos demais, a validade é obrigatória e no máximo 18 meses após a visita. **Hoje essa lista está duplicada** em `lib/actions.ts`, `lib/api/promotor.ts`, `components/visits/new-visit-form.tsx`, `app/visitas/[id]/page.tsx` e `app/visitas/[id]/editar/page.tsx`. Ao mudar a regra, altere todos (ou faça antes a centralização descrita em `docs/MELHORIAS.md`).
 - **Rascunho de visita**: `saveVisitDraft` aceita campos vazios e descarta produtos incompletos; `createVisit` exige estabelecimento, data e produtos válidos.
+- **Cópia local da visita**: o `new-visit-form` salva campos e fotos no IndexedDB do aparelho a cada alteração (chave por e-mail do usuário + visita nova ou ID), oferece "Continuar de onde parou" ao reabrir e apaga a cópia depois de um envio (rascunho ou final) bem-sucedido. Enquanto houver alteração não enviada, sair da página pede confirmação.
 - **Check-in semanal**: semana de domingo a sábado no fuso de São Paulo; promotor sem registro na semana é levado a `/checkin`.
 
 ### Testes
